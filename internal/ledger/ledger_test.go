@@ -69,6 +69,21 @@ func TestClaudeUnverifiedDateStaysUnpriced(t *testing.T) {
 	}
 }
 
+func TestClaudeOtherModelsPricedAndSyntheticSkipped(t *testing.T) {
+	fable := strings.Replace(claudeLine("a", "req_a", "2026-10-01T00:00:00Z", ""), "claude-opus-5-5", "claude-fable-5-1", 1)
+	synthetic := strings.Replace(claudeLine("b", "req_b", "2026-10-01T00:00:01Z", ""), "claude-opus-5-5", "<synthetic>", 1)
+	entries := openClaudeFixture(t, fable, synthetic).Entries()
+	if len(entries) != 1 || entries[0].Model != "claude-fable-5-1" {
+		t.Fatalf("entries = %+v", entries)
+	}
+	// 10×10 + 1000×0.25 + 50×50 + 100×20 USD per million = $0.00485.
+	e := entries[0]
+	cost := e.Price.RegularNano + e.Price.CachedNano + e.Price.CacheWriteNano + e.Price.OutputNano
+	if !e.Price.Priced || cost != 4_850_000 {
+		t.Fatalf("price = %+v (nano %d)", e.Price, cost)
+	}
+}
+
 func TestClaudeDeduplicatesRepeatedBlocksAndSidechainReplays(t *testing.T) {
 	p := openClaudeFixture(t,
 		claudeLine("a", "req_a", "2026-10-01T00:00:00Z", ""),
