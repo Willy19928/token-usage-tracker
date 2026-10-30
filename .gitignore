@@ -1,0 +1,23 @@
+# Build output
+/dist/
+/codex-usage
+*.exe
+
+# Local runtime data (portable mode keeps every ledger here)
+/data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-journal
+*.log
+*.pid
+*.vbs
+.codex-usage-*
+
+# Editor and OS files
+.claude/
+.vscode/
+.idea/
+desktop.ini
+Thumbs.db
+.DS_Store
