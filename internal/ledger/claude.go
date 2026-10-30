@@ -79,19 +79,38 @@ func mustDate(value string) time.Time {
 
 // Anthropic official Standard API rates (USD per million tokens), effective
 // from each model's verified date. The 10/7 announcement explicitly changed
-// Sonnet cache pricing; it is not back-applied.
+// Sonnet cache pricing; it is not back-applied. Models whose rate has never
+// changed since release start at claudeLaunchRate, since no usage can predate
+// the release itself.
 var claudeRateCards = []claudeRate{
+	{Model: "claude-fable-5-1", ValidFrom: claudeLaunchRate, Input: 10, Output: 50, CacheRead: .25, CacheWrite: 12.5, Write1h: 20},
+	{Model: "claude-fable-5", ValidFrom: claudeLaunchRate, Input: 10, Output: 50, CacheRead: 1, CacheWrite: 12.5, Write1h: 20},
+	{Model: "claude-opus-5", ValidFrom: claudeLaunchRate, Input: 5, Output: 25, CacheRead: .5, CacheWrite: 6.25, Write1h: 10},
+	{Model: "claude-opus-4-8", ValidFrom: claudeLaunchRate, Input: 5, Output: 25, CacheRead: .5, CacheWrite: 6.25, Write1h: 10},
+	{Model: "claude-opus-4-7", ValidFrom: claudeLaunchRate, Input: 5, Output: 25, CacheRead: .5, CacheWrite: 6.25, Write1h: 10},
 	{Model: "claude-opus-4-6", ValidFrom: mustDate("2026-02-05T00:00:00Z"), Input: 5, Output: 25, CacheRead: .5, CacheWrite: 6.25, Write1h: 10},
+	{Model: "claude-sonnet-5", ValidFrom: claudeLaunchRate, Input: 2, Output: 10, CacheRead: .2, CacheWrite: 2.5, Write1h: 4},
+	{Model: "claude-sonnet-4-6", ValidFrom: claudeLaunchRate, Input: 3, Output: 15, CacheRead: .3, CacheWrite: 3.75, Write1h: 6},
+	{Model: "claude-haiku-4-5", ValidFrom: claudeLaunchRate, Input: 1, Output: 5, CacheRead: .1, CacheWrite: 1.25, Write1h: 2},
 	{Model: "claude-opus-5-5", ValidFrom: mustDate("2026-09-22T00:00:00Z"), Input: 4, Output: 20, CacheRead: .2, CacheWrite: 5, Write1h: 8},
 	{Model: "claude-sonnet-5-5", ValidFrom: mustDate("2026-10-07T00:00:00Z"), Input: 2, Output: 10, CacheRead: .1, CacheWrite: 2.5, Write1h: 4},
 	{Model: "claude-haiku-5-5", ValidFrom: mustDate("2026-10-07T00:00:00Z"), Input: .1, Output: .5, CacheRead: .01, CacheWrite: .125, Write1h: .2},
 	{Model: "claude-haiku-5-5", ValidFrom: mustDate("2026-10-07T00:00:00Z"), MinPromptTokens: 100001, Input: .5, Output: 2.5, CacheRead: .05, CacheWrite: .625, Write1h: 1},
 }
 
+var claudeLaunchRate = mustDate("2025-01-01T00:00:00Z")
+
+// Fast mode is priced at 2× standard on these models only.
+var claudeFastModels = map[string]bool{"claude-opus-5-5": true, "claude-opus-5": true, "claude-opus-4-8": true}
+
+// claudeSyntheticModel marks messages Claude Code writes locally (such as
+// usage-limit notices) without calling the API; they carry no tokens.
+const claudeSyntheticModel = "<synthetic>"
+
 var (
-	claudeVersionDots = regexp.MustCompile(`^claude-(opus|sonnet|haiku)-(\d)\.(\d)`)
+	claudeVersionDots = regexp.MustCompile(`^claude-(opus|sonnet|haiku|fable)-(\d)\.(\d)`)
 	claudeDateSuffix  = regexp.MustCompile(`-\d{8}$`)
-	claudeFamily      = regexp.MustCompile(`^claude-(opus|sonnet|haiku)-\d`)
+	claudeFamily      = regexp.MustCompile(`^claude-(opus|sonnet|haiku|fable)-\d`)
 	claudeMessageID   = regexp.MustCompile(`^(msg_|resp_)`)
 )
 
@@ -593,7 +612,7 @@ func priceClaude(r ClaudeRecord, overrides []DatedOverride) Price {
 	if manual == nil && r.Speed != "standard" && r.Speed != "fast" {
 		return unpriced("unknown_speed", "未知速度模式，未猜測加價")
 	}
-	if manual == nil && r.Speed == "fast" && canonical != "claude-opus-5-5" {
+	if manual == nil && r.Speed == "fast" && !claudeFastModels[canonical] {
 		return unpriced("unverified_fast", "此模型的快速模式費率尚未核實")
 	}
 	if manual == nil && r.Geo != "global" && r.Geo != "us" {
@@ -638,7 +657,7 @@ func loadClaude(ctx context.Context, db *ledgerDB) ([]Entry, error) {
 		if err := jsonUnmarshal(row.Payload, &r); err != nil {
 			return nil, err
 		}
-		if r.Excluded != "" {
+		if r.Excluded != "" || r.Model == claudeSyntheticModel {
 			continue
 		}
 		at, ok := parseJSTime(r.Timestamp)
