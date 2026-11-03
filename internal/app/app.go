@@ -32,7 +32,7 @@ import (
 )
 
 var (
-	Version   = "1.0.1"
+	Version   = "1.0.2"
 	Commit    = "dev"
 	BuildDate = "unknown"
 )
@@ -96,6 +96,8 @@ func (c CLI) Run(args []string) int {
 		err = c.scan(args)
 	case "summary":
 		err = c.summary(args)
+	case "_apply-update":
+		err = c.applyUpdate(args)
 	case "doctor":
 		err = c.doctor(args)
 	case "config":
@@ -227,7 +229,28 @@ func openState() (*runtimeState, error) {
 // openLedgers opens the Claude Code and Antigravity ledgers: beside the
 // program in a portable copy, otherwise under the per-user data directory.
 func openLedgers() ([]*ledger.Provider, error) {
-	claudeDir, agDir := os.Getenv("CLAUDE_TRACKER_DATA"), os.Getenv("ANTIGRAVITY_TRACKER_DATA")
+	claudeDir, agDir := ledgerDirs()
+	claude, err := ledger.OpenClaude(claudeDir, nil)
+	if err != nil {
+		return nil, fmt.Errorf("open Claude Code ledger: %w", err)
+	}
+	ag, err := ledger.OpenAntigravity(agDir, os.Getenv("ANTIGRAVITY_TRACKER_HOME"))
+	if err != nil {
+		claude.Close()
+		return nil, fmt.Errorf("open Antigravity ledger: %w", err)
+	}
+	providers := []*ledger.Provider{claude, ag}
+	for _, p := range providers {
+		if err := p.Reload(context.Background()); err != nil {
+			log.Printf("%s ledger load: %v", p.Label, err)
+		}
+	}
+	return providers, nil
+}
+
+// ledgerDirs returns the Claude Code and Antigravity ledger folders.
+func ledgerDirs() (claudeDir, agDir string) {
+	claudeDir, agDir = os.Getenv("CLAUDE_TRACKER_DATA"), os.Getenv("ANTIGRAVITY_TRACKER_DATA")
 	if data, ok := config.PortableDataDir(); ok {
 		if claudeDir == "" {
 			claudeDir = filepath.Join(data, "claude")
@@ -248,22 +271,7 @@ func openLedgers() ([]*ledger.Provider, error) {
 	if agDir == "" {
 		agDir = filepath.Join(local, "AntigravityUsage")
 	}
-	claude, err := ledger.OpenClaude(claudeDir, nil)
-	if err != nil {
-		return nil, fmt.Errorf("open Claude Code ledger: %w", err)
-	}
-	ag, err := ledger.OpenAntigravity(agDir, os.Getenv("ANTIGRAVITY_TRACKER_HOME"))
-	if err != nil {
-		claude.Close()
-		return nil, fmt.Errorf("open Antigravity ledger: %w", err)
-	}
-	providers := []*ledger.Provider{claude, ag}
-	for _, p := range providers {
-		if err := p.Reload(context.Background()); err != nil {
-			log.Printf("%s ledger load: %v", p.Label, err)
-		}
-	}
-	return providers, nil
+	return claudeDir, agDir
 }
 
 func (s *runtimeState) closeLedgers() {
@@ -326,6 +334,9 @@ func (c CLI) serve(args []string, daemon bool) error {
 	defer cancel()
 	defer state.closeLedgers()
 	go backgroundLedgerScan(ctx, state.server)
+	updates := newUpdater(state.paths)
+	state.server.Updates = updates
+	go updates.Run(ctx)
 	go func() {
 		result, scanErr := state.scanner.Scan(ctx, state.homes, false)
 		if scanErr != nil && !errors.Is(scanErr, context.Canceled) {

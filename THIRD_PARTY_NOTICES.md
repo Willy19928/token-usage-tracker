@@ -5,6 +5,7 @@
 - `modernc.org/sqlite`：BSD-3-Clause
 - `github.com/pelletier/go-toml/v2`：MIT
 - `golang.org/x/sys`：BSD-3-Clause
+- `github.com/klauspost/compress`（僅 `zstd` 解壓縮）：BSD-3-Clause
 
 `internal/timezone` 內含 Go 標準函式庫的部分程式碼，授權見同資料夾的 `GO-LICENSE`（BSD-3-Clause）。
 

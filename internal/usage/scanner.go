@@ -151,7 +151,7 @@ func (s *Scanner) scanPass(ctx context.Context, homes []string) (ScanResult, err
 
 		var files int64
 		for _, path := range discovery.Paths {
-			info, statErr := os.Stat(path)
+			info, statErr := statRollout(path)
 			if statErr != nil || info.IsDir() {
 				if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 					result.Warnings++
@@ -221,9 +221,11 @@ func (s *Scanner) scanFileTransaction(ctx context.Context, home, path string, me
 			return result, err
 		}
 		pendingForkReplay := cursor.ForkedFromID != "" && cursor.ReplayOffset == 0 && cursor.Offset == 0
+		// A compressed copy carries its own modification time but the same
+		// content, so only size and the prefix hash identify it.
+		sameTime := isCompressedRollout(info) || cursor.ModifiedNanos == info.ModTime().UnixNano()
 		if cursor.Offset >= info.Size() && cursor.Size == info.Size() &&
-			!pendingForkReplay &&
-			cursor.ModifiedNanos == info.ModTime().UnixNano() {
+			!pendingForkReplay && sameTime {
 			if err := s.backfillJSONLModes(ctx, home, path, cursor); err != nil {
 				return result, err
 			}
@@ -236,7 +238,7 @@ func (s *Scanner) scanFileTransaction(ctx context.Context, home, path string, me
 		case cursor.Offset > info.Size() || cursor.Size > info.Size():
 			return result, &RebuildRequiredError{Kind: "rollout_truncated", Path: path,
 				Detail: fmt.Sprintf("檔案從 %d 縮短到 %d", cursor.Size, info.Size())}
-		case cursor.Size == info.Size() && cursor.ModifiedNanos != 0 && cursor.ModifiedNanos != info.ModTime().UnixNano():
+		case cursor.Size == info.Size() && cursor.ModifiedNanos != 0 && !sameTime:
 			return result, &RebuildRequiredError{Kind: "rollout_rewritten", Path: path,
 				Detail: "檔案大小未變但修改時間變化"}
 		}
@@ -327,14 +329,11 @@ func (s *Scanner) scanFileTransaction(ctx context.Context, home, path string, me
 			return result, err
 		}
 	}
-	file, err := os.Open(path)
+	file, err := openRolloutAt(path, cursor.Offset)
 	if err != nil {
 		return result, err
 	}
 	defer file.Close()
-	if _, err := file.Seek(cursor.Offset, io.SeekStart); err != nil {
-		return result, err
-	}
 	reader := bufio.NewReaderSize(file, 64<<10)
 	committedOffset := cursor.Offset
 	for {
@@ -852,7 +851,7 @@ type rolloutInspection struct {
 // baseline and the first last_token_usage remains child usage.
 func (s *Scanner) inspectRollout(ctx context.Context, path string) (rolloutInspection, error) {
 	var out rolloutInspection
-	file, err := os.Open(path)
+	file, err := openRollout(path)
 	if err != nil {
 		return out, err
 	}
@@ -1030,7 +1029,7 @@ func hashFilePrefix(path string, length int64) (string, error) {
 	if length <= 0 {
 		return "", nil
 	}
-	file, err := os.Open(path)
+	file, err := openRollout(path)
 	if err != nil {
 		return "", err
 	}
@@ -1124,7 +1123,7 @@ func resolveStateRollout(ctx context.Context, home string, session model.Session
 		path = filepath.Join(home, path)
 	}
 	if abs, err := canonicalPath(path); err == nil {
-		if info, err := os.Stat(abs); err == nil && !info.IsDir() {
+		if info, err := statRollout(abs); err == nil && !info.IsDir() {
 			return abs
 		}
 	}
@@ -1149,7 +1148,7 @@ func resolveStateRollout(ctx context.Context, home string, session model.Session
 // Read a bounded prefix, never a full transcript or a copied parent metadata
 // record later in a fork. Incomplete or unverified headers remain unresolved.
 func rolloutOwner(ctx context.Context, path string) string {
-	file, err := os.Open(path)
+	file, err := openRollout(path)
 	if err != nil {
 		return ""
 	}
@@ -1191,8 +1190,8 @@ func walkRollouts(home string) []string {
 			if entry.IsDir() {
 				return nil
 			}
-			if strings.EqualFold(filepath.Ext(entry.Name()), ".jsonl") {
-				if canonical, canonicalErr := canonicalPath(path); canonicalErr == nil {
+			if logical, ok := logicalRolloutPath(path); ok {
+				if canonical, canonicalErr := canonicalPath(logical); canonicalErr == nil {
 					out = append(out, canonical)
 				}
 			}

@@ -21,6 +21,7 @@ import (
 	"tokenusage/internal/model"
 	"tokenusage/internal/pricing"
 	"tokenusage/internal/store"
+	"tokenusage/internal/updater"
 	"tokenusage/internal/usage"
 	usageweb "tokenusage/internal/web"
 )
@@ -33,6 +34,7 @@ type Server struct {
 	Port                 int
 	Version              string
 	Ledgers              []*ledger.Provider
+	Updates              *updater.Manager
 	LoadPricingOverrides func() (map[string]pricing.Override, error)
 	SavePricingOverrides func(map[string]pricing.Override) error
 
@@ -70,6 +72,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/session-estimates", s.handleSessionEstimates)
 	mux.HandleFunc("/api/v1/warnings", s.handleWarnings)
 	mux.HandleFunc("/api/v1/cost-estimate", s.handleCostEstimate)
+	mux.HandleFunc("/api/v1/updates", s.handleUpdates)
+	mux.HandleFunc("/api/v1/updates/", s.handleUpdates)
 	mux.HandleFunc("/api/v1/pricing", s.handlePricing)
 	mux.HandleFunc("/api/v1/pricing/overrides", s.handlePricingOverrides)
 	mux.HandleFunc("/api/v1/rescan", s.handleRescan)
@@ -429,6 +433,13 @@ func (s *Server) handlePricing(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodGet)
 		return
 	}
+	if p, ok, err := s.pricingLedger(r); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	} else if ok {
+		writeJSON(w, http.StatusOK, p.Pricing(r.Context()))
+		return
+	}
 	overrides, err := s.pricingOverrides()
 	if err != nil {
 		writeError(w, err)
@@ -442,9 +453,54 @@ func (s *Server) handlePricing(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+// pricingLedger returns the ledger a pricing request targets; ok is false for
+// Codex, whose rates live in the main store.
+func (s *Server) pricingLedger(r *http.Request) (*ledger.Provider, bool, error) {
+	sel, err := s.selection(r.URL.Query())
+	if err != nil || sel.codex {
+		return nil, false, err
+	}
+	return sel.ledgers[0], true, nil
+}
+
+func (s *Server) handleLedgerOverrides(w http.ResponseWriter, r *http.Request, p *ledger.Provider) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	var payload struct {
+		Overrides *[]ledger.DatedOverride `json:"overrides"`
+	}
+	if err := decoder.Decode(&payload); err != nil {
+		http.Error(w, "無效請求內容: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := ensureJSONEOF(decoder); err != nil {
+		http.Error(w, "無效請求內容: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if payload.Overrides == nil {
+		http.Error(w, "請求內容必須包含 overrides", http.StatusBadRequest)
+		return
+	}
+	if err := p.SetOverrides(r.Context(), *payload.Overrides); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.pricingRevision.Add(1)
+	s.sessionEstimateCache.clear()
+	writeJSON(w, http.StatusOK, p.Pricing(r.Context()))
+}
+
 func (s *Server) handlePricingOverrides(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		methodNotAllowed(w, http.MethodPut)
+		return
+	}
+	if p, ok, err := s.pricingLedger(r); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	} else if ok {
+		s.handleLedgerOverrides(w, r, p)
 		return
 	}
 	if s.SavePricingOverrides == nil {

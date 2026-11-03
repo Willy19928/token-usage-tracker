@@ -60,6 +60,13 @@ var builtInCatalog = []CatalogEntry{
 		Source: "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
 	},
 	{
+		Model: "gpt-6.1-terra", DisplayName: "GPT-6.1 Terra",
+		SnapshotPatterns:   []string{"gpt-6.1-terra-YYYY-MM-DD"},
+		InputUSDPerMillion: "1.00", CachedInputUSDPerMillion: "0.05",
+		CacheWriteInputUSDPerMillion: "1.25", OutputUSDPerMillion: "5.00",
+		Source: "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+	},
+	{
 		Model: "gpt-6-astra", DisplayName: "GPT-6 Astra",
 		SnapshotPatterns:   []string{"gpt-6-astra-YYYY-MM-DD"},
 		InputUSDPerMillion: "10.00", CachedInputUSDPerMillion: "1.00",

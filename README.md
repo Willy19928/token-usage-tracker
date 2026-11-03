@@ -13,6 +13,7 @@
 - **每日**：月曆熱度、點選日期看當日模型構成與費用。
 - **明細**：依模型、來源、Agent、專案、Thread 分組；對話列表與任務樹；搜尋對話。
 - **匯出**：依目前來源與篩選匯出 CSV 或 JSON。
+- **軟體更新**：自動檢查 GitHub 上的新版，有新版時在頁面上方提示；按下「下載並更新」會驗證、備份後替換程式並重新啟動，可攜版也能直接更新。
 - 繁體中文／English、淺色／深色主題、字級與密度設定。
 
 ![每日用量](docs/images/daily.png)
@@ -21,7 +22,7 @@
 
 | 來源 | 讀取的本機資料 | 記錄內容 |
 |---|---|---|
-| Codex | `CODEX_HOME`（預設 `~/.codex`）的 `sessions/`、`archived_sessions/` JSONL，以及 Codex 狀態資料庫的路徑與標題 | Token 分類、模型、來源、專案、Thread、Agent、Fast 模式 |
+| Codex | `CODEX_HOME`（預設 `~/.codex`）的 `sessions/`、`archived_sessions/` JSONL（含 Codex 壓縮後的 `.jsonl.zst`），以及 Codex 狀態資料庫的路徑與標題 | Token 分類、模型、來源、專案、Thread、Agent、Fast 模式 |
 | Claude Code | `~/.claude/projects`、`~/.config/claude/projects` 下的 JSONL（含子代理與已同步到本機的 SSH 會話） | Token 分類、模型、5 分鐘／1 小時快取寫入、思考 Token、速度與推論地區 |
 | Antigravity | `~/.gemini/antigravity*/brain/*/.system_generated/logs/transcript.jsonl` 與對應的 `conversations/*.db` | Token 分類、模型、思考 Token、模型選擇紀錄 |
 
@@ -142,7 +143,8 @@ Linux 與 macOS 的 Codex 統計放在 `~/.local/share/codex-usage` 與 `~/Libra
 
 - 服務只綁定 `127.0.0.1`，拒絕綁定其他位址；寫入類 API 會檢查來源必須是本機。
 - 網頁不載入任何外部資源，有嚴格的 Content-Security-Policy。
-- 不上傳任何資料、沒有遙測、不會自動連網下載或更新。
+- 不上傳任何資料、沒有遙測。
+- 唯一會連網的是「軟體更新」：預設每 6 小時向 GitHub 查詢一次最新版本號（可在網頁頁尾的「軟體更新」關閉）。只有你按下「下載並更新」才會下載新版；下載後先比對發佈頁的 SHA256SUMS，備份程式與三個帳本，再替換並重新啟動，新版沒有正常啟動就自動還原舊版。
 - 價格表隨程式內建，執行時不會抓取網頁。
 
 ## 費用的意義
@@ -153,14 +155,13 @@ Linux 與 macOS 的 Codex 統計放在 `~/.local/share/codex-usage` 與 `~/Libra
 - Claude Code 依 Anthropic 官方日期費率，區分 5 分鐘與 1 小時快取寫入；快速模式與美國推論地區按官方倍率。
 - Antigravity 依各模型的日期費率，Gemini 3.1 Pro 長上下文使用較高費率。
 
-沒有已核實費率的模型或日期會標為「未定價」，Token 照常統計，不會被當成零元。可以在「定價設定」為 Codex 模型指定別名或自訂單價。
+沒有已核實費率的模型或日期會標為「未定價」，Token 照常統計，不會被當成零元。「定價設定」分成 Codex、Claude Code、Antigravity 三頁，各自列出內建費率與未定價的模型：Codex 模型可以指定別名或自訂單價，Claude Code 與 Antigravity 可以填入有生效日的自訂單價。
 
 ## 已知限制
 
 - 只統計這台電腦上的紀錄；其他電腦的用量要在那台電腦上看。
 - 原始紀錄在安裝前就已刪除的部分，無法補回。
 - 只有 Codex 的紀錄含專案與對話標題；Claude Code 與 Antigravity 的對話以「來源 · ID 前 8 碼」顯示。
-- 「定價設定」視窗目前只能編輯 Codex 的費率。
 - `summary` 命令目前只輸出 Codex 的摘要，三個來源合計請看網頁或匯出。
 
 ## 開發與測試

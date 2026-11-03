@@ -585,6 +585,15 @@ select:focus, input:focus { border-color: var(--teal); box-shadow: 0 0 0 3px col
 .catalog-row { min-width: 620px; display: grid; grid-template-columns: 1.2fr repeat(4, .7fr); gap: 10px; padding: 9px 4px; border-top: 1px solid var(--line); font-family: var(--mono); font-size: var(--type-micro); }
 .catalog-row.header { color: var(--text-faint); }
 .catalog-row a { color: var(--teal-strong); text-decoration: none; }
+.catalog-row small { display: block; margin-top: 2px; color: var(--text-faint); }
+.catalog-row.ledger { min-width: 660px; grid-template-columns: 1.4fr .8fr repeat(4, .6fr); }
+.catalog-row.ledger-1h { min-width: 720px; grid-template-columns: 1.4fr .8fr repeat(5, .6fr); }
+.pricing-tabs { margin-top: 14px; }
+.pricing-notes { margin: -8px 0 18px; padding-left: 18px; color: var(--text-soft); font-size: var(--type-caption); line-height: 1.6; }
+.override-card-head > div { min-width: 0; flex: 1; }
+.override-card-head .override-model { min-height: 36px; padding: 6px 9px; font-family: var(--mono); font-size: var(--type-ui); }
+.unpriced-card { border-style: dashed; }
+.unpriced-card .override-card-head { margin-bottom: 6px; }
 .warning-list { display: grid; gap: 8px; margin-top: 18px; }
 .warning-row { display: grid; grid-template-columns: 125px minmax(0, 1fr); gap: 4px 14px; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
 .warning-row time { color: var(--text-faint); font-family: var(--mono); font-size: var(--type-micro); }

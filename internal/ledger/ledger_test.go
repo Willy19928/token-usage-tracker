@@ -69,6 +69,31 @@ func TestClaudeUnverifiedDateStaysUnpriced(t *testing.T) {
 	}
 }
 
+func TestClaudeOverridesRepriceAndValidate(t *testing.T) {
+	ctx := context.Background()
+	p := openClaudeFixture(t, claudeLine("a", "req_a", "2026-09-01T00:00:00Z", ""))
+	info := p.Pricing(ctx)
+	if len(info.Unpriced) != 1 || info.Unpriced[0].ReasonKind != "unverified_rate" || len(info.Catalog) == 0 || !info.Separate1h {
+		t.Fatalf("pricing before override = %+v", info)
+	}
+	if err := p.SetOverrides(ctx, []DatedOverride{{Model: "claude-opus-5-5", ValidFrom: "2026-13-01"}}); err == nil {
+		t.Fatal("invalid start date accepted")
+	}
+	write1h := 8.0
+	if err := p.SetOverrides(ctx, []DatedOverride{{Model: "claude-opus-5-5", ValidFrom: "2026-08-01",
+		Input: 4, Output: 20, CacheRead: .2, CacheWrite: 5, CacheWrite1h: &write1h}}); err != nil {
+		t.Fatal(err)
+	}
+	e := p.Entries()[0]
+	// 10×4 + 1000×0.2 + 50×20 + 100×8 USD per million = $0.00204.
+	if cost := e.Price.RegularNano + e.Price.CachedNano + e.Price.CacheWriteNano + e.Price.OutputNano; !e.Price.Priced || cost != 2_040_000 {
+		t.Fatalf("price after override = %+v", e.Price)
+	}
+	if info := p.Pricing(ctx); len(info.Unpriced) != 0 || len(info.Overrides) != 1 {
+		t.Fatalf("pricing after override = %+v", info)
+	}
+}
+
 func TestClaudeOtherModelsPricedAndSyntheticSkipped(t *testing.T) {
 	fable := strings.Replace(claudeLine("a", "req_a", "2026-10-01T00:00:00Z", ""), "claude-opus-5-5", "claude-fable-5-1", 1)
 	synthetic := strings.Replace(claudeLine("b", "req_b", "2026-10-01T00:00:01Z", ""), "claude-opus-5-5", "<synthetic>", 1)
@@ -187,6 +212,16 @@ func TestAntigravityTextEstimate(t *testing.T) {
 	}
 	if e.Model != canonicalModel("antigravity-unknown") {
 		t.Fatalf("model = %q", e.Model)
+	}
+}
+
+func TestAntigravityPricesSonnet46(t *testing.T) {
+	name := canonicalModel(normalizeAGModel("Claude Sonnet 4.6 (Thinking)"))
+	record := AntigravityRecord{Model: name, Totals: agTotals{Input: 1000, Cached: 2000, Output: 100, Total: 3100}}
+	price := priceAntigravity(record, mustDate("2026-10-01T00:00:00Z"), nil)
+	// 1000×3 + 2000×0.3 + 100×15 USD per million = $0.0051.
+	if cost := price.RegularNano + price.CachedNano + price.CacheWriteNano + price.OutputNano; name != "claude-sonnet-4-6" || !price.Priced || cost != 5_100_000 {
+		t.Fatalf("model %q price %+v", name, price)
 	}
 }
 

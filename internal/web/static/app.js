@@ -127,6 +127,7 @@ const state = {
   monthReport: null,
   dailyInitialSelection: true,
   pricing: null,
+  pricingProvider: "codex",
   filterOptions: null,
   dataRevision: null,
   pendingDataRefresh: false,
@@ -342,7 +343,7 @@ const confidenceLabel = (value) => {
 
 async function api(path, options = {}) {
   const method = String(options.method || "GET").toUpperCase();
-  const cacheable = method === "GET" && !path.startsWith("/api/v1/status") && !path.startsWith("/api/v1/warnings");
+  const cacheable = method === "GET" && !path.startsWith("/api/v1/status") && !path.startsWith("/api/v1/warnings") && !path.startsWith("/api/v1/updates");
   const requestGeneration = cacheGeneration;
   const key = `${requestGeneration}:${method} ${path}`;
   if (cacheable) {
@@ -1590,13 +1591,115 @@ function setExportLinks() {
 
 async function openPricingDialog() {
   openDialog($("#pricingDialog"));
+  await loadPricing(state.provider === "all" ? "codex" : state.provider);
+}
+
+async function loadPricing(provider) {
+  state.pricingProvider = provider;
+  for (const tab of $$("[data-pricing-provider]")) {
+    const selected = tab.dataset.pricingProvider === provider;
+    tab.classList.toggle("selected", selected);
+    tab.setAttribute("aria-selected", String(selected));
+  }
+  const ledger = provider !== "codex";
+  $("#pricingIntro").textContent = t(ledger ? `pricing.intro.${provider}` : "pricing.intro");
+  $("#pricingMeta").textContent = t("pricing.loading");
+  $("#pricingNotes").hidden = true;
   $("#pricingOverrideList").innerHTML = `<div class="empty-state">${escapeHTML(t("pricing.loading"))}</div>`;
+  $("#pricingCatalog").innerHTML = "";
+  state.pricing = null;
   try {
-    state.pricing = await api("/api/v1/pricing");
-    renderPricing(state.pricing);
+    const payload = await api(`/api/v1/pricing${ledger ? `?provider=${encodeURIComponent(provider)}` : ""}`);
+    if (state.pricingProvider !== provider) return;
+    state.pricing = payload;
+    if (ledger) renderLedgerPricing(payload);
+    else renderPricing(payload);
   } catch (error) {
     $("#pricingOverrideList").innerHTML = `<div class="empty-state">${escapeHTML(error.message)}</div>`;
   }
+}
+
+function renderLedgerPricing(payload) {
+  const unpriced = payload.unpriced_models || [];
+  $("#pricingMeta").textContent = t("pricing.ledgerMeta", {
+    currency: payload.currency, count: i18n.formatNumber(unpriced.length), tokens: fullToken(payload.unpriced_tokens || 0)
+  });
+  const notes = $("#pricingNotes");
+  notes.innerHTML = (payload.notes || []).map((key) => `<li>${escapeHTML(t(`pricing.note.${key}`))}</li>`).join("");
+  notes.hidden = !notes.children.length;
+  renderLedgerCatalog(payload);
+  const list = $("#pricingOverrideList");
+  list.innerHTML = "";
+  for (const item of unpriced) {
+    const card = document.createElement("article");
+    card.className = "override-card unpriced-card";
+    card.innerHTML = `<div class="override-card-head"><div><strong>${escapeHTML(item.model || t("pricing.unknownName"))}</strong><small>${escapeHTML(t("pricing.unpricedRequests", { requests: i18n.formatNumber(item.requests), tokens: fullToken(item.tokens) }))}</small></div>${item.model && item.reason_kind === "unverified_rate" ? `<button class="text-button copper pressable" type="button">${escapeHTML(t("pricing.setRate"))}</button>` : ""}</div><p class="override-hint">${escapeHTML(item.reason || item.reason_kind)}</p>`;
+    $("button", card)?.addEventListener("click", () => appendLedgerOverrideCard({ model: item.model }));
+    list.appendChild(card);
+  }
+  for (const row of payload.overrides || []) appendLedgerOverrideCard(row);
+  if (!list.children.length) list.innerHTML = `<div class="empty-state">${escapeHTML(t("pricing.ledgerEmpty"))}</div>`;
+}
+
+function renderLedgerCatalog(payload) {
+  const separate = payload.separate_1h_cache_write;
+  const columns = separate ? "ledger-1h" : "ledger";
+  const tier = (entry) => entry.min_prompt_tokens > 0 ? t("pricing.tier", { tokens: i18n.formatNumber(entry.min_prompt_tokens - 1) }) : "";
+  const head = `<div class="catalog-row header ${columns}"><span>${escapeHTML(t("pricing.catalogModel"))}</span><span>${escapeHTML(t("pricing.validFrom"))}</span><span>Input</span><span>Cached</span><span>${separate ? "Write 5m" : "Write"}</span>${separate ? "<span>Write 1h</span>" : ""}<span>Output</span></div>`;
+  const rows = (payload.catalog || []).map((entry) => `<div class="catalog-row ${columns}"><span><a href="${escapeHTML(entry.source)}" target="_blank" rel="noreferrer">${escapeHTML(entry.model)}</a>${tier(entry) ? `<small>${escapeHTML(tier(entry))}</small>` : ""}</span><span>${escapeHTML(entry.valid_from || t("pricing.sinceLaunch"))}</span><span>${entry.input}</span><span>${entry.cache_read}</span><span>${entry.cache_write || "—"}</span>${separate ? `<span>${entry.cache_write_1h ?? "—"}</span>` : ""}<span>${entry.output}</span></div>`).join("");
+  $("#pricingCatalog").innerHTML = head + rows;
+}
+
+function appendLedgerOverrideCard(row) {
+  const list = $("#pricingOverrideList");
+  if ($(".empty-state", list)) list.innerHTML = "";
+  const separate = state.pricing?.separate_1h_cache_write;
+  const value = (key) => row[key] == null ? "" : escapeHTML(String(row[key]));
+  const card = document.createElement("article");
+  card.className = "override-card";
+  card.dataset.ledgerOverride = "";
+  card.innerHTML = `<div class="override-card-head"><div><input class="override-model" data-field="model" value="${value("model")}" placeholder="${escapeHTML(t("pricing.placeholder"))}" aria-label="${escapeHTML(t("pricing.catalogModel"))}"><small>${escapeHTML(t("pricing.localCustom"))}</small></div><button class="remove-override pressable" type="button">${escapeHTML(t("action.remove"))}</button></div>
+    <div class="custom-rate-grid">
+      <label>${escapeHTML(t("pricing.validFrom"))}<input type="date" data-field="valid_from" value="${value("valid_from")}"></label>
+      <label>${escapeHTML(t("pricing.validTo"))}<input type="date" data-field="valid_to" value="${value("valid_to")}"></label>
+      <label>${escapeHTML(t("pricing.minPrompt"))}<input data-field="min_prompt_tokens" inputmode="numeric" value="${value("min_prompt_tokens")}" placeholder="0"></label>
+      <span></span>
+      <label>Input<input data-rate="input" inputmode="decimal" value="${value("input")}" placeholder="USD / 1M"></label>
+      <label>Cached<input data-rate="cache_read" inputmode="decimal" value="${value("cache_read")}" placeholder="USD / 1M"></label>
+      <label>${separate ? "Write 5m" : "Cache Write"}<input data-rate="cache_write" inputmode="decimal" value="${value("cache_write")}" placeholder="USD / 1M"></label>
+      ${separate ? `<label>Write 1h<input data-rate="cache_write_1h" inputmode="decimal" value="${value("cache_write_1h")}" placeholder="USD / 1M"></label>` : ""}
+      <label>Output<input data-rate="output" inputmode="decimal" value="${value("output")}" placeholder="USD / 1M"></label>
+    </div>
+    <p class="override-hint">${escapeHTML(t("pricing.ledgerRateHint"))}</p>`;
+  list.appendChild(card);
+  $(".remove-override", card).addEventListener("click", () => card.remove());
+  $("[data-field=model]", card).focus();
+}
+
+function collectLedgerOverrides() {
+  const decimal = /^\d+(?:\.\d{1,4})?$/;
+  return $$("[data-ledger-override]", $("#pricingOverrideList")).map((card) => {
+    const separate = Boolean($("[data-rate=cache_write_1h]", card));
+    const field = (name) => $(`[data-field=${name}]`, card).value.trim();
+    const model = field("model");
+    if (!model) throw new Error(t("pricing.modelRequired"));
+    const validFrom = field("valid_from");
+    if (!validFrom) throw new Error(t("pricing.validFromMissing", { model }));
+    const row = { model, valid_from: validFrom, valid_to: field("valid_to") || null, min_prompt_tokens: 0 };
+    const minPrompt = field("min_prompt_tokens");
+    if (minPrompt) {
+      if (!/^\d+$/.test(minPrompt)) throw new Error(t("pricing.minPromptInvalid", { model }));
+      row.min_prompt_tokens = Number(minPrompt);
+    }
+    const required = ["input", "cache_read", "cache_write", "output", ...(separate ? ["cache_write_1h"] : [])];
+    for (const key of required) {
+      const rate = $(`[data-rate=${key}]`, card).value.trim();
+      if (!rate) throw new Error(t("pricing.rateMissing", { model, rate: key }));
+      if (!decimal.test(rate)) throw new Error(t("pricing.rateInvalid", { model }));
+      row[key] = Number(rate);
+    }
+    return row;
+  });
 }
 
 function renderPricing(payload) {
@@ -1688,12 +1791,14 @@ function collectPricingOverrides() {
 }
 
 async function savePricing() {
+  const provider = state.pricingProvider || "codex";
+  const ledger = provider !== "codex";
   let overrides;
-  try { overrides = collectPricingOverrides(); } catch (error) { toast(error.message, true); return; }
+  try { overrides = ledger ? collectLedgerOverrides() : collectPricingOverrides(); } catch (error) { toast(error.message, true); return; }
   const button = $("#savePricing");
   button.disabled = true;
   try {
-    state.pricing = await api("/api/v1/pricing/overrides", {
+    state.pricing = await api(`/api/v1/pricing/overrides${ledger ? `?provider=${encodeURIComponent(provider)}` : ""}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ overrides })
@@ -1916,9 +2021,13 @@ function setupEvents() {
     const input = $("#newOverrideModel");
     const model = input.value.trim().toLowerCase();
     if (!model) { toast(t("pricing.modelRequired"), true); return; }
-    appendOverrideCard(model);
+    if (state.pricingProvider && state.pricingProvider !== "codex") appendLedgerOverrideCard({ model });
+    else appendOverrideCard(model);
     input.value = "";
   });
+  for (const tab of $$("[data-pricing-provider]")) {
+    tab.addEventListener("click", () => { if (tab.dataset.pricingProvider !== state.pricingProvider) loadPricing(tab.dataset.pricingProvider); });
+  }
   $("#newOverrideModel").addEventListener("keydown", (event) => {
     if (event.key === "Enter") { event.preventDefault(); $("#addOverride").click(); }
   });
