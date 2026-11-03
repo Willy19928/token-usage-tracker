@@ -13,6 +13,7 @@ Local token usage and API-equivalent cost for **Codex**, **Claude Code** and **A
 - **Daily**: calendar heat map; pick a day for its model mix and cost.
 - **Details**: group by model, source, agent, project or thread; session list and task tree; session search.
 - **Export**: CSV or JSON for the current source and filters.
+- **Software updates**: checks GitHub for new releases and shows a notice at the top of the page. Download and update verifies, backs up, replaces the program and restarts it; portable copies update in place too.
 - Traditional Chinese / English, light / dark theme, type size and density settings.
 
 ![Daily usage](docs/images/daily.png)
@@ -21,7 +22,7 @@ Local token usage and API-equivalent cost for **Codex**, **Claude Code** and **A
 
 | Source | Local data read | Recorded |
 |---|---|---|
-| Codex | JSONL under `sessions/` and `archived_sessions/` in `CODEX_HOME` (default `~/.codex`), plus paths and titles from the Codex state database | Token categories, model, source, project, thread, agent, Fast mode |
+| Codex | JSONL under `sessions/` and `archived_sessions/` in `CODEX_HOME` (default `~/.codex`), including rollouts Codex compressed to `.jsonl.zst`, plus paths and titles from the Codex state database | Token categories, model, source, project, thread, agent, Fast mode |
 | Claude Code | JSONL under `~/.claude/projects` and `~/.config/claude/projects` (including subagents and SSH sessions synced locally) | Token categories, model, 5-minute / 1-hour cache writes, thinking tokens, speed and inference region |
 | Antigravity | `~/.gemini/antigravity*/brain/*/.system_generated/logs/transcript.jsonl` and the matching `conversations/*.db` | Token categories, model, thinking tokens, model selections |
 
@@ -142,7 +143,8 @@ All three ledgers are append-only: once usage is recorded it stays, even after t
 
 - The service binds to `127.0.0.1` only and refuses any other address; mutating API calls must come from a local origin.
 - The page loads no external resources and ships a strict Content-Security-Policy.
-- No uploads, no telemetry, no automatic downloads or updates.
+- No uploads, no telemetry.
+- The only network access is **Software updates**: by default it asks GitHub for the latest version number every 6 hours (you can turn this off under Software updates in the page footer). A new version is downloaded only when you choose Download and update; it is verified against the release SHA256SUMS, the program and all three ledgers are backed up, and the previous version is restored automatically if the new one does not start.
 - Prices are built into the program; nothing is fetched at runtime.
 
 ## What the cost means
@@ -153,14 +155,13 @@ Amounts are equivalents at each vendor's public **Standard API prices**. They ar
 - Claude Code uses Anthropic's official dated rates with separate 5-minute and 1-hour cache-write prices; fast mode and the US inference region use the official multipliers.
 - Antigravity uses dated rates per model; long-context Gemini 3.1 Pro requests use the higher tier.
 
-Models or dates without a verified rate are shown as unpriced. Their tokens still count, and they are never treated as free. For Codex models you can set an alias or custom rate under **Pricing**.
+Models or dates without a verified rate are shown as unpriced. Their tokens still count, and they are never treated as free. The **Pricing** dialog has one tab each for Codex, Claude Code and Antigravity, listing built-in rates and unpriced models. Codex models can take an alias or custom rate; Claude Code and Antigravity take custom rates with a start date.
 
 ## Known limits
 
 - Only this computer's records are counted; check other machines on those machines.
 - Records deleted before installation cannot be recovered.
 - Only Codex records carry project and conversation titles; Claude Code and Antigravity sessions show as "source · first 8 characters of the ID".
-- The **Pricing** dialog edits Codex rates only.
 - The `summary` command prints Codex only; use the dashboard or an export for the combined total.
 
 ## Development

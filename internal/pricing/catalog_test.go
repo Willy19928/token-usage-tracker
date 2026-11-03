@@ -18,6 +18,20 @@ func TestResolveGPT6AstraPricing(t *testing.T) {
 	}
 }
 
+func TestResolveGPT61TerraPricing(t *testing.T) {
+	rate, ok, err := Resolve("gpt-6.1-terra", nil)
+	if err != nil || !ok {
+		t.Fatalf("expected GPT-6.1 Terra to resolve: %v", err)
+	}
+	if rate.CanonicalModel != "gpt-6.1-terra" || rate.InputNanoPerToken != 1000 || rate.CachedNanoPerToken != 50 || rate.OutputNanoPerToken != 5000 ||
+		rate.CacheWriteNanoPerToken == nil || *rate.CacheWriteNanoPerToken != 1250 {
+		t.Fatalf("unexpected GPT-6.1 Terra rate: %#v", rate)
+	}
+	if _, _, ok := FastMultiplier("gpt-6.1-terra"); ok {
+		t.Fatal("GPT-6.1 Terra Fast multiplier is not confirmed and must stay unpriced")
+	}
+}
+
 func TestResolveGPT6SolAndLunaPricing(t *testing.T) {
 	for _, tt := range []struct {
 		name                              string

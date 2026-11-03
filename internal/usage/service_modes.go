@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -33,14 +32,11 @@ func (s *Scanner) backfillJSONLModes(ctx context.Context, home, path string, cur
 		}
 		start = inspection.ReplayOffset
 	}
-	f, err := os.Open(path)
+	f, err := openRolloutAt(path, start)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	if _, err = f.Seek(start, io.SeekStart); err != nil {
-		return err
-	}
 	reader := bufio.NewReaderSize(io.LimitReader(f, cursor.Offset-start), 64<<10)
 	items := []store.TurnMode{}
 	for {

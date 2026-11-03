@@ -2,7 +2,6 @@ package usage
 
 import (
 	"context"
-	"os"
 	"sync"
 )
 
@@ -30,7 +29,7 @@ func (p *ActivityProbe) Changed(ctx context.Context, homes []string) (bool, erro
 			if err := ctx.Err(); err != nil {
 				return false, err
 			}
-			info, err := os.Stat(path)
+			info, err := statRollout(path)
 			if err != nil || info.IsDir() {
 				continue
 			}

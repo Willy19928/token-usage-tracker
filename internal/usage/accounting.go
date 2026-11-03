@@ -16,7 +16,7 @@ func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.Se
 	err := s.Store.Ingest(ctx, func(tx *store.Store) error {
 		worker := &Scanner{Store: tx, MaxRelevantRecord: s.MaxRelevantRecord, Now: s.Now}
 		var err error
-		info, err = os.Stat(path)
+		info, err = statRollout(path)
 		if err != nil {
 			return err
 		}

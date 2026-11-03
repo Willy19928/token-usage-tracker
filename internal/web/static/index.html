@@ -63,6 +63,10 @@
   </header>
 
   <main class="shell" id="mainContent" tabindex="-1">
+    <section class="update-banner hidden" id="updateBanner" aria-live="polite">
+      <span id="updateBannerText"></span>
+      <div><button class="text-button pressable" id="reviewUpdate" type="button" aria-haspopup="dialog" aria-controls="updateDialog" data-i18n="update.review">檢視更新</button><button class="text-button pressable" id="dismissUpdate" type="button" data-i18n="update.later">稍後</button></div>
+    </section>
     <section class="demo-banner hidden" id="demoBanner" aria-labelledby="demoTitle">
       <span class="demo-beacon" aria-hidden="true"></span>
       <div><p class="eyebrow" data-i18n="demo.kicker">INTERACTIVE DEMO / SYNTHETIC DATA</p><strong id="demoTitle" data-i18n="demo.title">這是互動示範，不是你的本機資料</strong><p data-i18n="demo.body">僅使用對話內合成資料；不讀取檔案、不設 Cookie、無追蹤程式碼或外部請求，重新整理即復位。</p></div>
@@ -311,7 +315,7 @@
     </section>
 
     <footer><span data-i18n="footer.summary">本機 Session JSONL · API 等價成本並非帳單 · 僅監聽 127.0.0.1</span><div class="footer-updates"><span id="measurementTimezone"></span>
-        <span id="versionLabel"></span></div></footer>
+        <span id="versionLabel"></span><button class="text-button pressable" id="updateButton" type="button" aria-haspopup="dialog" aria-controls="updateDialog" data-i18n="update.title">軟體更新</button></div></footer>
   </main>
 
 
@@ -387,12 +391,40 @@
   <dialog class="modal-dialog pricing-dialog" id="pricingDialog" aria-labelledby="pricingTitle">
     <div class="dialog-frame">
       <div class="dialog-head"><h2 id="pricingTitle" data-i18n="pricing.title">API 等價成本定價</h2><button class="dialog-close pressable" type="button" data-close aria-label="關閉定價設定" data-i18n-aria-label="action.closePricing">×</button></div>
-      <p class="dialog-intro" data-i18n="pricing.intro">內建價格隨程式版本儲存，執行時不連網。內部模型保持未定價，除非你明確對映或填寫單價。</p>
+      <div class="segmented pricing-tabs" id="pricingTabs" role="tablist" aria-label="定價來源" data-i18n-aria-label="pricing.sourceAria"><button class="pressable" type="button" role="tab" data-pricing-provider="codex">Codex</button><button class="pressable" type="button" role="tab" data-pricing-provider="claude">Claude Code</button><button class="pressable" type="button" role="tab" data-pricing-provider="antigravity">Antigravity</button></div>
+      <p class="dialog-intro" id="pricingIntro">內建價格隨程式版本儲存，執行時不連網。內部模型保持未定價，除非你明確對映或填寫單價。</p>
+      <ul class="pricing-notes" id="pricingNotes" hidden></ul>
       <div class="pricing-meta" id="pricingMeta" data-i18n="pricing.loading">正在讀取本機定價…</div>
       <div class="override-toolbar"><label for="newOverrideModel" data-i18n="pricing.addOverride">新增模型覆寫</label><div><input id="newOverrideModel" autocomplete="off" placeholder="例如 internal-model" data-i18n-placeholder="pricing.placeholder"><button class="action-button quiet pressable" id="addOverride" type="button" data-i18n="action.add">新增</button></div></div>
       <div class="override-list" id="pricingOverrideList"></div>
       <details class="catalog-disclosure"><summary data-i18n="pricing.catalog">檢視內建 Standard 價格</summary><div class="catalog-table" id="pricingCatalog"></div></details>
       <div class="dialog-actions"><button class="action-button quiet pressable" type="button" data-close data-i18n="action.cancel">取消</button><button class="action-button primary pressable" id="savePricing" type="button" data-i18n="pricing.save">儲存並重新估算</button></div>
+    </div>
+  </dialog>
+
+  <dialog class="modal-dialog update-dialog" id="updateDialog" aria-labelledby="updateTitle">
+    <div class="dialog-frame">
+      <div class="dialog-head"><h2 id="updateTitle" data-i18n="update.title">軟體更新</h2><button class="dialog-close pressable" type="button" data-close aria-label="關閉更新" data-i18n-aria-label="update.close">×</button></div>
+      <p class="dialog-intro" data-i18n="update.intro">自動檢查只會從 GitHub 取得版本資訊。按下「下載並更新」後才會下載、驗證並重新啟動程式，現有的統計與設定都會保留。</p>
+      <div class="update-versions"><span data-i18n="update.current">目前版本</span><strong id="updateCurrent">—</strong><span data-i18n="update.latest">最新穩定版</span><strong id="updateLatest">—</strong></div>
+      <p id="updateStatus" role="status"></p>
+      <p id="updateError" class="update-error hidden"></p>
+      <p id="updatePortable" class="dialog-intro hidden" data-i18n="update.portable">這份程式無法在這裡自動更新。請從發佈頁下載新版。</p>
+      <p><a id="updateReleaseLink" class="text-button" href="https://github.com/Willy19928/token-usage-tracker/releases" target="_blank" rel="noopener noreferrer" data-i18n="update.notes">檢視發佈說明</a></p>
+      <div class="update-directory">
+        <label for="updateDownloadDir" data-i18n="update.downloadDirectory">更新檔下載資料夾</label>
+        <input id="updateDownloadDir" type="text" spellcheck="false" autocomplete="off" aria-describedby="updateDirectoryHint">
+        <p id="updateDirectoryHint" class="dialog-intro" data-i18n="update.directoryHint">請填完整的資料夾路徑。儲存後用於下次下載；已下載的檔案會留在原處。</p>
+        <div class="update-directory-actions">
+          <button class="action-button quiet pressable" id="saveUpdateDirectory" type="button" data-i18n="update.saveDirectory">儲存資料夾</button>
+          <button class="text-button pressable" id="resetUpdateDirectory" type="button" data-i18n="update.defaultDirectory">恢復預設</button>
+          <button class="text-button pressable" id="openUpdateDirectory" type="button" data-i18n="update.openDirectory">開啟資料夾</button>
+          <button class="text-button pressable" id="copyUpdateDirectory" type="button" data-i18n="update.copyDirectory">複製路徑</button>
+        </div>
+        <p id="updateLastDownload" class="update-last-download hidden"></p>
+      </div>
+      <label class="update-preference"><input id="autoCheckUpdates" type="checkbox"><span data-i18n="update.auto">自動檢查新版本（每 6 小時）</span></label>
+      <div class="dialog-actions"><button class="action-button quiet pressable" id="checkUpdates" type="button" data-i18n="update.check">檢查更新</button><button class="action-button quiet pressable" type="button" data-close data-i18n="update.later">稍後</button><button class="action-button primary pressable" id="installUpdate" type="button" disabled data-i18n="update.install">下載並更新</button></div>
     </div>
   </dialog>
 
@@ -423,5 +455,6 @@
   <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
   <script src="/i18n.js"></script>
   <script src="/app.js" defer></script>
+  <script src="/updates.js" defer></script>
 </body>
 </html>

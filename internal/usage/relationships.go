@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"os"
 
 	"tokenusage/internal/model"
 	"tokenusage/internal/store"
@@ -17,7 +16,7 @@ func (s *Scanner) backfillRelationship(ctx context.Context, path string, cursor 
 	if err != nil || checked || cursor.SessionID == "" {
 		return err
 	}
-	f, err := os.Open(path)
+	f, err := openRollout(path)
 	if err != nil {
 		return err
 	}
