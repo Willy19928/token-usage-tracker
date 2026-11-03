@@ -166,7 +166,7 @@
           <div class="hourly-chart-scroll">
             <div class="hourly-chart" id="hourlyChart">
               <svg class="hourly-line" id="hourlyLine" viewBox="0 0 1000 180" preserveAspectRatio="none" aria-hidden="true"></svg>
-              <div class="hourly-points" id="hourlyPoints" role="group" aria-label="每小時 Token 用量折線圖"><div class="empty-state" data-i18n="common.loading">正在讀取…</div></div>
+              <div class="hourly-points" id="hourlyPoints" role="group" data-i18n-aria-label="hourly.chartAria" aria-label="每小時 Token 用量折線圖"><div class="empty-state" data-i18n="common.loading">正在讀取…</div></div>
               <div class="hourly-axis" id="hourlyAxis" aria-hidden="true"></div>
             </div>
           </div>
@@ -392,7 +392,7 @@
     <div class="dialog-frame">
       <div class="dialog-head"><h2 id="pricingTitle" data-i18n="pricing.title">API 等價成本定價</h2><button class="dialog-close pressable" type="button" data-close aria-label="關閉定價設定" data-i18n-aria-label="action.closePricing">×</button></div>
       <div class="segmented pricing-tabs" id="pricingTabs" role="tablist" aria-label="定價來源" data-i18n-aria-label="pricing.sourceAria"><button class="pressable" type="button" role="tab" data-pricing-provider="codex">Codex</button><button class="pressable" type="button" role="tab" data-pricing-provider="claude">Claude Code</button><button class="pressable" type="button" role="tab" data-pricing-provider="antigravity">Antigravity</button></div>
-      <p class="dialog-intro" id="pricingIntro">內建價格隨程式版本儲存，執行時不連網。內部模型保持未定價，除非你明確對映或填寫單價。</p>
+      <p class="dialog-intro" id="pricingIntro" data-i18n="pricing.intro">內建價格隨程式版本儲存，執行時不連網。內部模型保持未定價，除非你明確對映或填寫單價。</p>
       <ul class="pricing-notes" id="pricingNotes" hidden></ul>
       <div class="pricing-meta" id="pricingMeta" data-i18n="pricing.loading">正在讀取本機定價…</div>
       <div class="override-toolbar"><label for="newOverrideModel" data-i18n="pricing.addOverride">新增模型覆寫</label><div><input id="newOverrideModel" autocomplete="off" placeholder="例如 internal-model" data-i18n-placeholder="pricing.placeholder"><button class="action-button quiet pressable" id="addOverride" type="button" data-i18n="action.add">新增</button></div></div>

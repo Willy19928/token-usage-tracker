@@ -28,7 +28,7 @@
     $("#updatePortable").classList.toggle("hidden", status.can_install);
     const phase = status.checking || pending ? "checking" : busy() || ["rolled_back", "failed"].includes(status.phase) ? status.phase : status.available ? "available" : status.phase === "updated" ? "updated" : status.latest_version ? "latestAlready" : "unchecked";
     $("#updateStatus").textContent = t(`update.${phase}`, { version: status.latest_version });
-    $("#updateError").textContent = status.error || "";
+    $("#updateError").textContent = i18n.translateServer(status.error) || "";
     $("#updateError").classList.toggle("hidden", !status.error);
     if (/^https:\/\/github\.com\/Willy19928\/token-usage-tracker\/releases(?:\/tag\/v\d+\.\d+\.\d+)?$/.test(status.release_url)) $("#updateReleaseLink").href = status.release_url;
     const dismissed = readStorage("codex-usage-update-dismissed") === status.latest_version;

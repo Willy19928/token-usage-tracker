@@ -2,6 +2,7 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const i18n = window.CodexUsageI18n;
 const t = (key, values) => i18n.t(key, values);
+const serverText = (value) => i18n.translateServer(value);
 
 const FILTER_FIELDS = {
   mode: { selector: "#filterMode", labelKey: "filter.mode" },
@@ -360,7 +361,7 @@ async function api(path, options = {}) {
     }
     if (!response.ok) {
       const message = payload && typeof payload === "object" ? payload.error : payload;
-      const error = new Error(message || `${response.status} ${response.statusText}`);
+      const error = new Error(serverText(message) || `${response.status} ${response.statusText}`);
       error.status = response.status;
       error.payload = payload;
       throw error;
@@ -449,6 +450,13 @@ function estimateDisplay(estimate = {}) {
   return estimateTokens(estimate) ? formatUSD(estimate.usd) : "—";
 }
 
+// Prefer the translated label for a known reason kind over the service text.
+function reasonText(kind, detail) {
+  const key = `reason.${kind}`;
+  const translated = t(key);
+  return translated === key ? serverText(detail) || kind : translated;
+}
+
 function reasonSummary(estimate = {}) {
   const reasons = estimate.reasons || [];
   if (!reasons.length) return "";
@@ -508,7 +516,7 @@ async function loadStatus() {
   if (status.accounting_upgrade_note) notes.push(t("accounting.upgradeNote"));
   if (status.warning_count) notes.push(t("dynamic.warningCount", { count: i18n.formatNumber(status.warning_count) }));
   for (const home of status.codex_homes || []) {
-    if (home.warning) notes.push(i18n.getLocale() === "en" ? `${t("warning.raw")}: ${home.warning}` : home.warning);
+    if (home.warning) notes.push(serverText(home.warning));
   }
   state.statusQualityNotes = notes;
   renderQualityBanner();
@@ -823,7 +831,7 @@ function renderHourlyContext(report, point) {
     const modelEstimate = item.estimate || {};
     const modelCost = estimateTokens(modelEstimate) && !Number(modelEstimate.priced_tokens || 0)
       ? t("dynamic.unpriced") : estimateDisplay(modelEstimate);
-    return `<span class="hourly-model-chip" title="${escapeHTML(`${item.key} · ${fullToken(tokens)} Token · ${modelCost}`)}"><strong>${escapeHTML(item.key || t("common.unknownModel"))}</strong><small>${escapeHTML(`${formatToken(tokens)} · ${modelCost}`)}</small></span>`;
+    return `<span class="hourly-model-chip" title="${escapeHTML(`${serverText(item.key)} · ${fullToken(tokens)} Token · ${modelCost}`)}"><strong>${escapeHTML(serverText(item.key) || t("common.unknownModel"))}</strong><small>${escapeHTML(`${formatToken(tokens)} · ${modelCost}`)}</small></span>`;
   }).join("") + (models.length > visibleModels.length ? `<span class="hourly-model-more">${escapeHTML(t("hourly.moreModels", { count: i18n.formatNumber(models.length - visibleModels.length) }))}</span>` : "")
     : `<span class="hourly-placeholder">${escapeHTML(t("hourly.noModels"))}</span>`;
 
@@ -1108,7 +1116,7 @@ function renderOverviewModels(models) {
     const total = usageTotal(item.usage);
     const cost = estimateDisplay(item.estimate);
     const coverage = estimateTokens(item.estimate) ? formatPercent(item.estimate.coverage_ratio) : t("dynamic.unpriced");
-    return `<div class="rank-row"><span class="rank-name" title="${escapeHTML(item.key)}">${escapeHTML(item.key)}</span><span class="rank-signal" aria-hidden="true"><i style="width:${Math.max(1, total / max * 100)}%"></i></span><span class="rank-value" title="${fullToken(total)} Token">${formatToken(usageTotal(item.usage))}<small class="mode-fast">Fast ${formatToken(usageTotal(modesFor(item).fast))}</small><small>${cost} · ${coverage}</small></span></div>`;
+    return `<div class="rank-row"><span class="rank-name" title="${escapeHTML(serverText(item.key))}">${escapeHTML(serverText(item.key))}</span><span class="rank-signal" aria-hidden="true"><i style="width:${Math.max(1, total / max * 100)}%"></i></span><span class="rank-value" title="${fullToken(total)} Token">${formatToken(usageTotal(item.usage))}<small class="mode-fast">Fast ${formatToken(usageTotal(modesFor(item).fast))}</small><small>${cost} · ${coverage}</small></span></div>`;
   }).join("");
 }
 
@@ -1320,7 +1328,7 @@ function renderDayDetail(point, report, loadingModels = false) {
   }
   const models = report?.models || [];
   $("#dayModelCount").textContent = models.length ? t("common.modelShort", { count: i18n.formatNumber(models.length) }) : "";
-  $("#dayModels").innerHTML = models.length ? models.map((item) => `<div class="mini-model-row"><span title="${escapeHTML(item.key)}">${escapeHTML(item.key)}</span><strong title="${fullToken(usageTotal(item.usage))}">${formatToken(usageTotal(item.usage))}<small class="mode-fast">Fast ${formatToken(usageTotal(modesFor(item).fast))}</small></strong></div>`).join("") : `<div class="empty-state">${escapeHTML(t("dynamic.noModelsDay"))}</div>`;
+  $("#dayModels").innerHTML = models.length ? models.map((item) => `<div class="mini-model-row"><span title="${escapeHTML(serverText(item.key))}">${escapeHTML(serverText(item.key))}</span><strong title="${fullToken(usageTotal(item.usage))}">${formatToken(usageTotal(item.usage))}<small class="mode-fast">Fast ${formatToken(usageTotal(modesFor(item).fast))}</small></strong></div>`).join("") : `<div class="empty-state">${escapeHTML(t("dynamic.noModelsDay"))}</div>`;
 }
 
 async function loadBreakdown({ preserve = false } = {}) {
@@ -1408,9 +1416,9 @@ function renderBreakdown(items, dimension) {
       ? t("dynamic.drillCancelTitle", { dimension: dimensionLabel(dimension) })
       : t("dynamic.drillTitle", { dimension: dimensionLabel(dimension) });
     const aria = active
-      ? t("dynamic.drillCancelAria", { value: item.key })
-      : t("dynamic.drillAria", { value: item.key });
-    return `<div class="breakdown-row"><span class="breakdown-name" title="${escapeHTML(item.key)}">${escapeHTML(item.key)}</span><span class="breakdown-track" aria-hidden="true"><i style="width:${Math.max(1, totalTokens / max * 100)}%"></i></span><span class="breakdown-value" title="${fullToken(totalTokens)} Token">${formatToken(usageTotal(item.usage))}<small class="mode-fast">Fast ${formatToken(usageTotal(modesFor(item).fast))}</small></span>${canFilter ? `<button class="breakdown-filter pressable ${active ? "active" : ""}" type="button" data-drill-value="${escapeHTML(item.key)}" title="${escapeHTML(title)}" aria-label="${escapeHTML(aria)}" aria-pressed="${active}">${active ? "×" : "＋"}</button>` : "<span></span>"}</div>`;
+      ? t("dynamic.drillCancelAria", { value: serverText(item.key) })
+      : t("dynamic.drillAria", { value: serverText(item.key) });
+    return `<div class="breakdown-row"><span class="breakdown-name" title="${escapeHTML(serverText(item.key))}">${escapeHTML(serverText(item.key))}</span><span class="breakdown-track" aria-hidden="true"><i style="width:${Math.max(1, totalTokens / max * 100)}%"></i></span><span class="breakdown-value" title="${fullToken(totalTokens)} Token">${formatToken(usageTotal(item.usage))}<small class="mode-fast">Fast ${formatToken(usageTotal(modesFor(item).fast))}</small></span>${canFilter ? `<button class="breakdown-filter pressable ${active ? "active" : ""}" type="button" data-drill-value="${escapeHTML(item.key)}" title="${escapeHTML(title)}" aria-label="${escapeHTML(aria)}" aria-pressed="${active}">${active ? "×" : "＋"}</button>` : "<span></span>"}</div>`;
   }).join("");
   $$('[data-drill-value]', container).forEach((button) => button.addEventListener("click", () => {
     if (state.filters[dimension] === button.dataset.drillValue) delete state.filters[dimension];
@@ -1488,7 +1496,7 @@ function renderSessions(items, { estimatesPending = false } = {}) {
       ? `<div class="session-metric session-cost pending" data-session-cost aria-busy="true"><small class="session-mobile-label">API</small><strong>${escapeHTML(t("details.costPending"))}</strong></div>`
       : `<div class="session-metric session-cost" data-session-cost title="${escapeHTML(presentation.title)}"><small class="session-mobile-label">API</small><strong>${escapeHTML(presentation.cost)}</strong>${presentation.partialCoverage ? `<small>${escapeHTML(presentation.partialCoverage)}</small>` : ""}</div>`;
     return `<article class="session-row ${tree ? "task-tree-row" : ""}" style="--task-depth:${Math.min(item.depth||0,6)}" data-session-id="${escapeHTML(item.session_id)}">
-    <div class="session-cell task-name">${tree && item.children ? `<button type="button" class="tree-toggle pressable" data-tree-toggle="${escapeHTML(item.session_id)}" aria-expanded="${!state.treeCollapsed.has(item.session_id)}" aria-label="${escapeHTML(t("tree.toggle", {title:item.title || item.session_id}))}">${state.treeCollapsed.has(item.session_id) ? "＋" : "−"}</button>` : ""}<strong title="${escapeHTML(item.title || item.session_id)}">${escapeHTML(item.title || t("dynamic.untitledThread"))}</strong><small title="${escapeHTML(item.session_id)}">${escapeHTML(shortId(item.session_id))}</small>${tree ? `<small class="tree-note">${escapeHTML(item.context_only ? t("tree.context") : t("tree.own"))}${item.relationship_status ? ` · ${escapeHTML(t(`tree.${item.relationship_status}`))}` : ""}${item.forked_from_id ? ` · ${escapeHTML(t("tree.fork", {id:shortId(item.forked_from_id)}))}` : ""}</small>` : ""}</div>
+    <div class="session-cell task-name">${tree && item.children ? `<button type="button" class="tree-toggle pressable" data-tree-toggle="${escapeHTML(item.session_id)}" aria-expanded="${!state.treeCollapsed.has(item.session_id)}" aria-label="${escapeHTML(t("tree.toggle", {title:serverText(item.title) || item.session_id}))}">${state.treeCollapsed.has(item.session_id) ? "＋" : "−"}</button>` : ""}<strong title="${escapeHTML(serverText(item.title) || item.session_id)}">${escapeHTML(serverText(item.title) || t("dynamic.untitledThread"))}</strong><small title="${escapeHTML(item.session_id)}">${escapeHTML(shortId(item.session_id))}</small>${tree ? `<small class="tree-note">${escapeHTML(item.context_only ? t("tree.context") : t("tree.own"))}${item.relationship_status ? ` · ${escapeHTML(t(`tree.${item.relationship_status}`))}` : ""}${item.forked_from_id ? ` · ${escapeHTML(t("tree.fork", {id:shortId(item.forked_from_id)}))}` : ""}</small>` : ""}</div>
     <div class="session-cell"><span title="${escapeHTML(item.project_path || t("common.notRecorded"))}">${escapeHTML(shortPath(item.project_path))}</span><small title="${escapeHTML(item.project_path || "")}">${escapeHTML(item.project_path || t("common.notRecorded"))}</small></div>
     <div class="session-cell"><strong title="${escapeHTML(item.model || t("common.unknownModel"))}">${escapeHTML(item.model || t("common.unknownModel"))}</strong><span>${escapeHTML(item.source || t("common.unknownSource"))}</span></div>
     <div class="session-cell"><span class="agent-badge">${escapeHTML(item.agent_type || "main")}</span><span class="confidence-badge ${escapeHTML(item.confidence)}">${confidenceLabel(item.confidence)}</span></div>
@@ -1574,7 +1582,7 @@ async function loadWarnings() {
       const period = occurrences > 1 ? t("warning.firstSeenMany", { time: localTime(firstSeen), count: fullToken(occurrences) }) : t("warning.firstSeen");
       const key = `warning.${item.kind}`;
       const label = t(key) === key ? item.kind : t(key);
-      return `<article class="warning-row"><time>${escapeHTML(t("warning.recent", { time: localTime(item.created_at) }))}<small>${escapeHTML(period)}</small></time><code title="${escapeHTML(item.kind)}">${escapeHTML(label)}</code><details><summary>${escapeHTML(t("warning.raw"))}</summary><p title="${escapeHTML(item.path || "")}">${escapeHTML(item.detail)}</p></details></article>`;
+      return `<article class="warning-row"><time>${escapeHTML(t("warning.recent", { time: localTime(item.created_at) }))}<small>${escapeHTML(period)}</small></time><code title="${escapeHTML(item.kind)}">${escapeHTML(label)}</code><details><summary>${escapeHTML(t("warning.raw"))}</summary><p title="${escapeHTML(item.path || "")}">${escapeHTML(serverText(item.detail))}</p></details></article>`;
     }).join("") : `<div class="empty-state">${escapeHTML(t("warning.none"))}</div>`;
   } catch (error) {
     container.innerHTML = `<div class="empty-state">${escapeHTML(error.message)}</div>`;
@@ -1633,7 +1641,7 @@ function renderLedgerPricing(payload) {
   for (const item of unpriced) {
     const card = document.createElement("article");
     card.className = "override-card unpriced-card";
-    card.innerHTML = `<div class="override-card-head"><div><strong>${escapeHTML(item.model || t("pricing.unknownName"))}</strong><small>${escapeHTML(t("pricing.unpricedRequests", { requests: i18n.formatNumber(item.requests), tokens: fullToken(item.tokens) }))}</small></div>${item.model && item.reason_kind === "unverified_rate" ? `<button class="text-button copper pressable" type="button">${escapeHTML(t("pricing.setRate"))}</button>` : ""}</div><p class="override-hint">${escapeHTML(item.reason || item.reason_kind)}</p>`;
+    card.innerHTML = `<div class="override-card-head"><div><strong>${escapeHTML(item.model || t("pricing.unknownName"))}</strong><small>${escapeHTML(t("pricing.unpricedRequests", { requests: i18n.formatNumber(item.requests), tokens: fullToken(item.tokens) }))}</small></div>${item.model && item.reason_kind === "unverified_rate" ? `<button class="text-button copper pressable" type="button">${escapeHTML(t("pricing.setRate"))}</button>` : ""}</div><p class="override-hint">${escapeHTML(reasonText(item.reason_kind, item.reason))}</p>`;
     $("button", card)?.addEventListener("click", () => appendLedgerOverrideCard({ model: item.model }));
     list.appendChild(card);
   }
@@ -2053,7 +2061,7 @@ function setupEvents() {
       await Promise.all([refreshFilterOptions ? loadFilterOptions({ force: true }) : Promise.resolve(), loadCurrentView()]);
     } catch (error) {
       if (!rebuild && error.payload?.rebuild_required) {
-        $("#rebuildDetail").textContent = error.payload.detail || error.message;
+        $("#rebuildDetail").textContent = serverText(error.payload.detail) || error.message;
         openDialog($("#rebuildDialog"));
       } else {
         toast(error.message, true);
