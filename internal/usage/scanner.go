@@ -239,8 +239,25 @@ func (s *Scanner) scanFileTransaction(ctx context.Context, home, path string, me
 			return result, &RebuildRequiredError{Kind: "rollout_truncated", Path: path,
 				Detail: fmt.Sprintf("檔案從 %d 縮短到 %d", cursor.Size, info.Size())}
 		case cursor.Size == info.Size() && cursor.ModifiedNanos != 0 && !sameTime:
-			return result, &RebuildRequiredError{Kind: "rollout_rewritten", Path: path,
-				Detail: "檔案大小未變但修改時間變化"}
+			// Backup, sync and security tools sometimes rewrite only the
+			// timestamp. Accept that when the content still yields the exact
+			// counters already recorded; anything else stays a rebuild decision.
+			touched, verifyErr := metadataOnlyTouch(path, cursor)
+			if verifyErr != nil {
+				return result, verifyErr
+			}
+			if !touched {
+				return result, &RebuildRequiredError{Kind: "rollout_rewritten", Path: path,
+					Detail: "檔案大小未變但修改時間變化"}
+			}
+			cursor.ModifiedNanos = info.ModTime().UnixNano()
+			if err := s.Store.PutCursor(ctx, cursor); err != nil {
+				return result, err
+			}
+			if err := s.Store.ClearResolvedFileWarnings(ctx, path); err != nil {
+				return result, err
+			}
+			return result, nil
 		}
 		probeBytes := cursor.Size
 		if probeBytes > 4096 {
@@ -1023,6 +1040,48 @@ func validTokenUsage(usage model.TokenUsage) bool {
 		usage.ReasoningOutput <= usage.Output &&
 		usage.Input <= math.MaxInt64-usage.Output &&
 		usage.Input+usage.Output == usage.Total
+}
+
+// metadataOnlyTouch reports whether a fully scanned file whose size is
+// unchanged still has the recorded prefix and ends on the recorded cumulative
+// counters. Event identities derive from those counters, so a match means the
+// existing ledger already reflects the file.
+func metadataOnlyTouch(path string, cursor store.FileCursor) (bool, error) {
+	if cursor.Offset != cursor.Size || cursor.PrefixHash == "" {
+		return false, nil
+	}
+	prefix, err := hashFilePrefix(path, minInt64(cursor.Size, 4096))
+	if err != nil || prefix != cursor.PrefixHash {
+		return false, err
+	}
+	file, err := openRollout(path)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	reader := bufio.NewReaderSize(io.LimitReader(file, cursor.Offset), 64<<10)
+	var last model.TokenUsage
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if bytes.Contains(line, []byte(`"token_count"`)) {
+			var env envelope
+			var event eventPayload
+			var info tokenInfo
+			if json.Unmarshal(line, &env) == nil && env.Type == "event_msg" &&
+				json.Unmarshal(env.Payload, &event) == nil && event.Type == "token_count" &&
+				len(event.Info) > 0 && string(event.Info) != "null" && json.Unmarshal(event.Info, &info) == nil &&
+				info.Total.Total != nil {
+				last = info.Total.withMissingSubsets(last)
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return false, readErr
+		}
+	}
+	return last.Equal(cursor.Cumulative), nil
 }
 
 func hashFilePrefix(path string, length int64) (string, error) {

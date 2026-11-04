@@ -963,6 +963,51 @@ func TestRewriteAndTruncationWaitForApprovalBeforeReplacingHistory(t *testing.T)
 	}
 }
 
+// Backup, sync and security tools can rewrite only a file's timestamp. That
+// must not stop scanning or ask for a rebuild that could drop history.
+func TestTimestampOnlyChangeKeepsScanning(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, ".codex")
+	dir := filepath.Join(home, "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	touched := filepath.Join(dir, "a-touched.jsonl")
+	content := `{"timestamp":"2026-07-30T01:00:00Z","type":"session_meta","payload":{"id":"touched","cwd":"/p","originator":"codex_cli_rs"}}` + "\n" +
+		tokenLine("2026-07-30T01:00:01Z", usage(700, 0, 0, 200, 0, 900), usage(700, 0, 0, 200, 0, 900)) + "\n" +
+		tokenLine("2026-07-30T01:00:02Z", usage(1000, 0, 0, 300, 0, 1300), usage(300, 0, 0, 100, 0, 400)) + "\n"
+	if err := os.WriteFile(touched, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := store.Open(filepath.Join(root, "usage.sqlite"))
+	defer st.Close()
+	scanner := &Scanner{Store: st}
+	if _, err := scanner.Scan(context.Background(), []string{home}, false); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(touched)
+	changed := info.ModTime().Add(10 * time.Millisecond)
+	if err := os.Chtimes(touched, changed, changed); err != nil {
+		t.Fatal(err)
+	}
+	later := filepath.Join(dir, "b-later.jsonl")
+	if err := os.WriteFile(later, []byte(`{"timestamp":"2026-07-30T02:00:00Z","type":"session_meta","payload":{"id":"later","cwd":"/p","originator":"codex_cli_rs"}}`+"\n"+
+		tokenLine("2026-07-30T02:00:01Z", usage(40, 0, 0, 10, 0, 50), usage(40, 0, 0, 10, 0, 50))+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scanner.Scan(context.Background(), []string{home}, false); err != nil {
+		t.Fatalf("timestamp-only change requested a rebuild: %v", err)
+	}
+	summary, _ := st.Summary(context.Background(), model.Filter{})
+	if summary.GrandTotal != 1350 {
+		t.Fatalf("usage after a timestamp-only change = %d, want 1350", summary.GrandTotal)
+	}
+	cursor, _, _ := st.GetCursor(context.Background(), touched)
+	if cursor.ModifiedNanos != changed.UnixNano() {
+		t.Fatal("cursor did not adopt the new timestamp")
+	}
+}
+
 func TestExtendedWindowsPathPrefixNormalizesToOrdinaryPath(t *testing.T) {
 	ordinary := `C:\Users\demo\.codex\sessions\one.jsonl`
 	extended := `\\?\C:\Users\demo\.codex\sessions\one.jsonl`
