@@ -29,18 +29,18 @@ func InstallService(executable, stateDir string) (ServiceResult, error) {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return ServiceResult{}, err
 	}
-	launcher := filepath.Join(stateDir, "codex-usage-start.vbs")
+	launcher := filepath.Join(stateDir, "token-usage-start.vbs")
 	vbsPath := strings.ReplaceAll(executable, `"`, `""`)
 	vbsState := strings.ReplaceAll(stateDir, `"`, `""`)
 	vbs := `Set shell = CreateObject("WScript.Shell")` + "\r\n" +
-		`shell.Environment("Process")("CODEX_USAGE_HOME") = "` + vbsState + `"` + "\r\n" +
+		`shell.Environment("Process")("TOKEN_USAGE_HOME") = "` + vbsState + `"` + "\r\n" +
 		`shell.Run Chr(34) & "` + vbsPath + `" & Chr(34) & " daemon", 0, False` + "\r\n"
 	if err := os.WriteFile(launcher, []byte(vbs), 0o600); err != nil {
 		return ServiceResult{}, err
 	}
 	command := `"` + system32("wscript.exe") + `" //B //Nologo "` + launcher + `"`
 	args := []string{"add", `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`,
-		"/v", "CodexUsage", "/t", "REG_SZ", "/d", command, "/f"}
+		"/v", "TokenUsage", "/t", "REG_SZ", "/d", command, "/f"}
 	output, err := exec.Command(system32("reg.exe"), args...).CombinedOutput()
 	if err != nil {
 		return ServiceResult{}, fmt.Errorf("註冊目前使用者登入啟動項目: %w: %s", err, strings.TrimSpace(string(output)))
@@ -84,29 +84,13 @@ func LockDown(path string) error {
 func SetPrivateUmask() {}
 
 func UninstallService(executable, stateDir string) error {
-	pidPath := filepath.Join(stateDir, "codex-usage.pid")
+	pidPath := filepath.Join(stateDir, "token-usage.pid")
 	if err := stopWindowsExecutable(executable); err != nil {
 		return err
 	}
 	_, _ = exec.Command(system32("reg.exe"), "delete",
-		`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", "CodexUsage", "/f").CombinedOutput()
-	for _, path := range []string{pidPath, filepath.Join(stateDir, "codex-usage-start.vbs")} {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-	return nil
-}
-
-func StopPreviousService(previous PreviousService) error {
-	if err := stopWindowsExecutable(previous.Executable); err != nil {
-		return err
-	}
-	if previous.StartupEntry != "" {
-		_, _ = exec.Command(system32("reg.exe"), "delete",
-			`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", previous.StartupEntry, "/f").CombinedOutput()
-	}
-	for _, path := range []string{previous.PIDPath, previous.LauncherPath} {
+		`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", "TokenUsage", "/f").CombinedOutput()
+	for _, path := range []string{pidPath, filepath.Join(stateDir, "token-usage-start.vbs")} {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return err
 		}
@@ -195,10 +179,6 @@ func windowsProcessError(action string, pid uint32, err error) error {
 	return fmt.Errorf("%s背景服務 PID %d: %w", action, pid, err)
 }
 
-func RemovePreviousExecutable(previous PreviousService) error {
-	return removePreviousExecutable(previous)
-}
-
 func StartDetached(executable string, args ...string) error {
 	command := exec.Command(executable, args...)
 	command.SysProcAttr = &syscall.SysProcAttr{
@@ -231,7 +211,7 @@ func OpenURL(rawURL string) error {
 func RemoveInstalledExecutable(executable, stateDir string, purge bool) error {
 	// A running Windows executable cannot delete itself. A narrowly scoped
 	// helper script waits for this process to exit, removes only the resolved
-	// install file, optionally removes the codex-usage state directory, then
+	// install file, optionally removes the token-usage service folder, then
 	// deletes itself.
 	exeAbs, err := filepath.Abs(executable)
 	if err != nil {
@@ -241,9 +221,9 @@ func RemoveInstalledExecutable(executable, stateDir string, purge bool) error {
 	if err != nil {
 		return err
 	}
-	if !strings.EqualFold(filepath.Base(exeAbs), "codex-usage.exe") ||
+	if !strings.EqualFold(filepath.Base(exeAbs), "token-usage.exe") ||
 		exeAbs == filepath.VolumeName(exeAbs)+string(os.PathSeparator) {
-		return fmt.Errorf("拒絕清理非 codex-usage 執行檔")
+		return fmt.Errorf("拒絕清理非 token-usage 執行檔")
 	}
 	if purge {
 		if err := ValidatePurgeStateDir(stateAbs); err != nil {
@@ -255,13 +235,13 @@ func RemoveInstalledExecutable(executable, stateDir string, purge bool) error {
 	}
 	exeBatch := strings.ReplaceAll(exeAbs, "%", "%%")
 	stateBatch := strings.ReplaceAll(stateAbs, "%", "%%")
-	helper := filepath.Join(os.TempDir(), fmt.Sprintf("codex-usage-uninstall-%d.cmd", time.Now().UnixNano()))
+	helper := filepath.Join(os.TempDir(), fmt.Sprintf("token-usage-uninstall-%d.cmd", time.Now().UnixNano()))
 	lines := []string{
 		"@echo off",
 		"ping 127.0.0.1 -n 3 > nul",
 		`del /f /q "` + exeBatch + `"`,
 	}
-	if strings.EqualFold(filepath.Base(filepath.Dir(exeAbs)), "codex-usage") {
+	if strings.EqualFold(filepath.Base(filepath.Dir(exeAbs)), "token-usage") {
 		parentBatch := strings.ReplaceAll(filepath.Dir(exeAbs), "%", "%%")
 		lines = append(lines, `rmdir "`+parentBatch+`" 2>nul`)
 	}

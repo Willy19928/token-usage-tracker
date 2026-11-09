@@ -93,7 +93,7 @@ var claudeRateCards = []claudeRate{
 	{Model: "claude-sonnet-4-6", ValidFrom: claudeLaunchRate, Input: 3, Output: 15, CacheRead: .3, CacheWrite: 3.75, Write1h: 6},
 	{Model: "claude-haiku-4-5", ValidFrom: claudeLaunchRate, Input: 1, Output: 5, CacheRead: .1, CacheWrite: 1.25, Write1h: 2},
 	{Model: "claude-opus-5-5", ValidFrom: mustDate("2026-09-22T00:00:00Z"), Input: 4, Output: 20, CacheRead: .2, CacheWrite: 5, Write1h: 8},
-	{Model: "claude-sonnet-5-5", ValidFrom: mustDate("2026-10-07T00:00:00Z"), Input: 2, Output: 10, CacheRead: .1, CacheWrite: 2.5, Write1h: 4},
+	{Model: "claude-sonnet-5-5", ValidFrom: mustDate("2026-10-07T00:00:00Z"), Input: 2, Output: 10, CacheRead: .2, CacheWrite: 2.5, Write1h: 4},
 	{Model: "claude-haiku-5-5", ValidFrom: mustDate("2026-10-07T00:00:00Z"), Input: .1, Output: .5, CacheRead: .01, CacheWrite: .125, Write1h: .2},
 	{Model: "claude-haiku-5-5", ValidFrom: mustDate("2026-10-07T00:00:00Z"), MinPromptTokens: 100001, Input: .5, Output: 2.5, CacheRead: .05, CacheWrite: .625, Write1h: 1},
 }

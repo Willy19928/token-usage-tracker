@@ -15,7 +15,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const windowsHelperEnvironment = "CODEX_USAGE_WINDOWS_PROCESS_HELPER"
+const windowsHelperEnvironment = "TOKEN_USAGE_WINDOWS_PROCESS_HELPER"
 
 func TestWindowsProcessHelper(t *testing.T) {
 	if os.Getenv(windowsHelperEnvironment) != "1" {
@@ -60,8 +60,8 @@ func TestUninstallServicePreservesMetadataWhenStopFails(t *testing.T) {
 	target, command := startWindowsProcessHelper(t)
 	waitForWindowsProcessPath(t, command.Process.Pid, target)
 	stateDir := t.TempDir()
-	pidPath := filepath.Join(stateDir, "codex-usage.pid")
-	launcherPath := filepath.Join(stateDir, "codex-usage-start.vbs")
+	pidPath := filepath.Join(stateDir, "token-usage.pid")
+	launcherPath := filepath.Join(stateDir, "token-usage-start.vbs")
 	if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d\n", command.Process.Pid)), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func startWindowsProcessHelper(t *testing.T) (string, *exec.Cmd) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join(t.TempDir(), "codex-usage.exe")
+	target := filepath.Join(t.TempDir(), "token-usage.exe")
 	data, err := os.ReadFile(source)
 	if err != nil {
 		t.Fatal(err)

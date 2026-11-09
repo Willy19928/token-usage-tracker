@@ -10,7 +10,7 @@ import (
 
 func defaultDownloadDirectory(stateDir string) string {
 	if dir, err := userDownloadsDirectory(); err == nil && filepath.IsAbs(dir) {
-		return filepath.Join(dir, "codex-usage")
+		return filepath.Join(dir, "token-usage")
 	}
 	return filepath.Join(stateDir, "downloads")
 }
@@ -27,7 +27,7 @@ func ensureDownloadDirectory(path string) error {
 	if err := os.MkdirAll(path, 0700); err != nil {
 		return fmt.Errorf("建立下載資料夾: %w", err)
 	}
-	f, err := os.CreateTemp(path, ".codex-usage-write-check-*")
+	f, err := os.CreateTemp(path, ".token-usage-write-check-*")
 	if err != nil {
 		return fmt.Errorf("下載資料夾無法寫入: %w", err)
 	}

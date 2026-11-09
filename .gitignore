@@ -1,6 +1,6 @@
 # Build output
 /dist/
-/codex-usage
+/token-usage
 *.exe
 
 # Local runtime data (portable mode keeps every ledger here)
@@ -12,7 +12,7 @@
 *.log
 *.pid
 *.vbs
-.codex-usage-*
+.token-usage-*
 
 # Editor and OS files
 .claude/

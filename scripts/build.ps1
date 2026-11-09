@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "1.0.4"
+    [string]$Version = "1.1.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,11 +39,11 @@ try {
         $env:CGO_ENABLED = "0"
         $env:GOOS = $Target.OS
         $env:GOARCH = $Target.Arch
-        $Name = "codex-usage-$($Target.OS)-$($Target.Arch)$($Target.Suffix)"
+        $Name = "token-usage-$($Target.OS)-$($Target.Arch)$($Target.Suffix)"
         $Output = Join-Path $Dist $Name
         $Artifacts += $Output
         $Ldflags = "-s -w -X tokenusage/internal/app.Version=$Version -X tokenusage/internal/app.Commit=$Commit -X tokenusage/internal/app.BuildDate=$BuildDate"
-        & $Go build -trimpath -buildvcs=false -ldflags $Ldflags -o $Output ./cmd/codex-usage
+        & $Go build -trimpath -buildvcs=false -ldflags $Ldflags -o $Output ./cmd/token-usage
         if ($LASTEXITCODE -ne 0) { throw "build failed for $($Target.OS)/$($Target.Arch)" }
     }
 } finally {

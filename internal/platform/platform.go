@@ -15,21 +15,11 @@ type ServiceResult struct {
 	Detail    string
 }
 
-type PreviousService struct {
-	StateDir     string
-	Executable   string
-	InstallDir   string
-	PIDPath      string
-	LauncherPath string
-	StartupEntry string
-	ServiceName  string
-}
-
 func WritePID(stateDir string) (func(), error) {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(stateDir, "codex-usage.pid")
+	path := filepath.Join(stateDir, "token-usage.pid")
 	if err := os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil {
 		return nil, err
 	}
@@ -37,7 +27,7 @@ func WritePID(stateDir string) (func(), error) {
 }
 
 func ReadPID(stateDir string) (int, error) {
-	return readPIDFile(filepath.Join(stateDir, "codex-usage.pid"))
+	return readPIDFile(filepath.Join(stateDir, "token-usage.pid"))
 }
 
 func readPIDFile(path string) (int, error) {
@@ -52,14 +42,6 @@ func readPIDFile(path string) (int, error) {
 	return pid, nil
 }
 
-func removePreviousExecutable(previous PreviousService) error {
-	if err := os.Remove(previous.Executable); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	_ = os.Remove(previous.InstallDir)
-	return nil
-}
-
 func ValidatePurgeStateDir(stateDir string) error {
 	absolute, err := filepath.Abs(stateDir)
 	if err != nil {
@@ -68,16 +50,16 @@ func ValidatePurgeStateDir(stateDir string) error {
 	clean := filepath.Clean(absolute)
 	root := filepath.Clean(filepath.VolumeName(clean) + string(os.PathSeparator))
 	if samePlatformPath(clean, root) {
-		return fmt.Errorf("拒絕 purge：狀態目錄不能是檔案系統根目錄")
+		return fmt.Errorf("拒絕 purge：服務資料夾不能是檔案系統根目錄")
 	}
 	if home, homeErr := os.UserHomeDir(); homeErr == nil && samePlatformPath(clean, filepath.Clean(home)) {
-		return fmt.Errorf("拒絕 purge：狀態目錄不能是使用者主目錄")
+		return fmt.Errorf("拒絕 purge：服務資料夾不能是使用者主目錄")
 	}
-	data, err := os.ReadFile(filepath.Join(absolute, ".codex-usage-state"))
+	data, err := os.ReadFile(filepath.Join(absolute, ".token-usage-state"))
 	if err != nil {
-		return fmt.Errorf("拒絕 purge：%s 缺少 codex-usage 狀態標記", absolute)
+		return fmt.Errorf("拒絕 purge：%s 缺少 token-usage 狀態標記", absolute)
 	}
-	if strings.TrimSpace(string(data)) != "codex-usage-state-v1" {
+	if strings.TrimSpace(string(data)) != "token-usage-state-v1" {
 		return fmt.Errorf("拒絕 purge：%s 狀態標記無效", absolute)
 	}
 	return nil

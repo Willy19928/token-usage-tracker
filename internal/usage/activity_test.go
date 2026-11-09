@@ -57,9 +57,9 @@ func TestActivityProbeOnlySignalsRolloutMetadataChanges(t *testing.T) {
 }
 
 func BenchmarkActivityProbe(b *testing.B) {
-	home := os.Getenv("CODEX_USAGE_BENCH_HOME")
+	home := os.Getenv("TOKEN_USAGE_BENCH_HOME")
 	if home == "" {
-		b.Skip("set CODEX_USAGE_BENCH_HOME to a read-only Codex home")
+		b.Skip("set TOKEN_USAGE_BENCH_HOME to a read-only Codex home")
 	}
 	probe := &ActivityProbe{}
 	if _, err := probe.Changed(context.Background(), []string{home}); err != nil {

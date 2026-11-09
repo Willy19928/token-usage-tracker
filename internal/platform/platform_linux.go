@@ -27,14 +27,14 @@ func InstallService(executable, stateDir string) (ServiceResult, error) {
 	if err := os.MkdirAll(unitDir, 0o700); err != nil {
 		return ServiceResult{}, err
 	}
-	unitPath := filepath.Join(unitDir, "codex-usage.service")
+	unitPath := filepath.Join(unitDir, "token-usage.service")
 	unit := `[Unit]
 Description=Token Usage local analytics service
 After=default.target
 
 [Service]
 Type=simple
-Environment=` + systemdQuote("CODEX_USAGE_HOME="+stateDir) + `
+Environment=` + systemdQuote("TOKEN_USAGE_HOME="+stateDir) + `
 ExecStart=` + systemdQuote(executable) + ` daemon
 Restart=on-failure
 RestartSec=5
@@ -64,10 +64,10 @@ WantedBy=default.target
 		}
 		return ServiceResult{
 			Installed: true, Started: true, Detail: unitPath,
-			Warning: "systemd --user 目前不可用；本次已背景啟動，但登入自啟需在 user bus 可用後執行 systemctl --user enable --now codex-usage",
+			Warning: "systemd --user 目前不可用；本次已背景啟動，但登入自啟需在 user bus 可用後執行 systemctl --user enable --now token-usage",
 		}, nil
 	}
-	output, err := exec.Command("systemctl", "--user", "enable", "--now", "codex-usage.service").CombinedOutput()
+	output, err := exec.Command("systemctl", "--user", "enable", "--now", "token-usage.service").CombinedOutput()
 	if err != nil {
 		if startErr := StartDetached(executable, "daemon"); startErr != nil {
 			return ServiceResult{}, fmt.Errorf("systemctl --user enable --now: %w: %s；背景啟動也失敗: %v",
@@ -94,20 +94,20 @@ func SetPrivateUmask() { syscall.Umask(0o077) }
 
 func UninstallService(_ string, stateDir string) error {
 	if _, err := exec.LookPath("systemctl"); err == nil {
-		_, _ = exec.Command("systemctl", "--user", "disable", "--now", "codex-usage.service").CombinedOutput()
+		_, _ = exec.Command("systemctl", "--user", "disable", "--now", "token-usage.service").CombinedOutput()
 	}
 	home, _ := os.UserHomeDir()
 	configHome := os.Getenv("XDG_CONFIG_HOME")
 	if configHome == "" {
 		configHome = filepath.Join(home, ".config")
 	}
-	_ = os.Remove(filepath.Join(configHome, "systemd", "user", "codex-usage.service"))
+	_ = os.Remove(filepath.Join(configHome, "systemd", "user", "token-usage.service"))
 	if _, err := exec.LookPath("systemctl"); err == nil {
 		_, _ = exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput()
 	}
 	if pid, err := ReadPID(stateDir); err == nil && pid != os.Getpid() {
 		executable, _ := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
-		if filepath.Base(executable) == "codex-usage" {
+		if filepath.Base(executable) == "token-usage" {
 			process, findErr := os.FindProcess(pid)
 			if findErr != nil {
 				return findErr
@@ -115,41 +115,8 @@ func UninstallService(_ string, stateDir string) error {
 			_ = process.Signal(syscall.SIGTERM)
 		}
 	}
-	_ = os.Remove(filepath.Join(stateDir, "codex-usage.pid"))
+	_ = os.Remove(filepath.Join(stateDir, "token-usage.pid"))
 	return nil
-}
-
-func StopPreviousService(previous PreviousService) error {
-	if _, err := exec.LookPath("systemctl"); err == nil && previous.ServiceName != "" {
-		_, _ = exec.Command("systemctl", "--user", "disable", "--now", previous.ServiceName).CombinedOutput()
-	}
-	home, _ := os.UserHomeDir()
-	configHome := os.Getenv("XDG_CONFIG_HOME")
-	if configHome == "" {
-		configHome = filepath.Join(home, ".config")
-	}
-	if previous.ServiceName != "" {
-		_ = os.Remove(filepath.Join(configHome, "systemd", "user", previous.ServiceName))
-	}
-	if _, err := exec.LookPath("systemctl"); err == nil {
-		_, _ = exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput()
-	}
-	if pid, err := readPIDFile(previous.PIDPath); err == nil && pid != os.Getpid() {
-		executable, _ := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
-		if filepath.Base(executable) == filepath.Base(previous.Executable) {
-			if process, findErr := os.FindProcess(pid); findErr == nil {
-				_ = process.Signal(syscall.SIGTERM)
-			}
-		}
-	}
-	if err := os.Remove(previous.PIDPath); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
-
-func RemovePreviousExecutable(previous PreviousService) error {
-	return removePreviousExecutable(previous)
 }
 
 func StartDetached(executable string, args ...string) error {
@@ -183,8 +150,8 @@ func RemoveInstalledExecutable(executable, stateDir string, purge bool) error {
 	if err != nil {
 		return err
 	}
-	if filepath.Base(exeAbs) != "codex-usage" {
-		return fmt.Errorf("拒絕清理非 codex-usage 執行檔")
+	if filepath.Base(exeAbs) != "token-usage" {
+		return fmt.Errorf("拒絕清理非 token-usage 執行檔")
 	}
 	if purge {
 		if err := ValidatePurgeStateDir(stateAbs); err != nil {

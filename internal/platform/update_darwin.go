@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func ManagedUpdateService() bool { return os.Getenv("CODEX_USAGE_LAUNCHD") == "1" }
+func ManagedUpdateService() bool { return os.Getenv("TOKEN_USAGE_LAUNCHD") == "1" }
 func StartUpdateHelper(executable, job, stateDir string, managed bool) error {
 	if !managed {
 		return StartDetached(executable, "_apply-update", job)

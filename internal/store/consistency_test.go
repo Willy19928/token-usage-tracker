@@ -10,7 +10,7 @@ import (
 )
 
 func TestTimezonePersistsAndRepeatedHoursRemainDistinct(t *testing.T) {
-	t.Setenv("CODEX_USAGE_TIMEZONE", "America/New_York")
+	t.Setenv("TOKEN_USAGE_TIMEZONE", "America/New_York")
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "usage.sqlite")
 	a, err := Open(path)
@@ -18,7 +18,7 @@ func TestTimezonePersistsAndRepeatedHoursRemainDistinct(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	t.Setenv("CODEX_USAGE_TIMEZONE", "Asia/Shanghai")
+	t.Setenv("TOKEN_USAGE_TIMEZONE", "Asia/Shanghai")
 	b, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ func TestTimezoneBackfillRoundsUniformAndChangingFractionalOffsets(t *testing.T)
 		{"Australia/Lord_Howe", []string{"2026-01-08T05:45:00Z", "2026-07-08T05:45:00Z"}, []string{"2026-01-08T05:00:00Z", "2026-07-08T05:30:00Z"}},
 	} {
 		t.Run(tc.zone, func(t *testing.T) {
-			t.Setenv("CODEX_USAGE_TIMEZONE", tc.zone)
+			t.Setenv("TOKEN_USAGE_TIMEZONE", tc.zone)
 			st, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 			if err != nil {
 				t.Fatal(err)

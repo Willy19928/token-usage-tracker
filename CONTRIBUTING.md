@@ -9,7 +9,7 @@
 
 | 路徑 | 內容 |
 |---|---|
-| `cmd/codex-usage` | 程式進入點 |
+| `cmd/token-usage` | 程式進入點 |
 | `internal/app` | 命令列、安裝、背景服務與排程掃描 |
 | `internal/usage` | Codex JSONL 掃描與去重 |
 | `internal/store` | Codex 統計資料庫與查詢 |
@@ -23,19 +23,19 @@
 ```bash
 go test ./...
 go vet ./...
-go build -o codex-usage.exe ./cmd/codex-usage
+go build -o token-usage.exe ./cmd/token-usage
 ```
 
 在前景用另一組資料試跑，不影響正式資料：
 
 ```bash
-CODEX_USAGE_HOME=/path/to/empty-dir \
+TOKEN_USAGE_HOME=/path/to/empty-dir \
 CLAUDE_TRACKER_DATA=/path/to/claude-copy \
 ANTIGRAVITY_TRACKER_DATA=/path/to/ag-copy \
-codex-usage serve
+token-usage serve
 ```
 
-`CODEX_USAGE_HOME` 必須是專用資料夾；可在其中的 `config.json` 改用其他連接埠。
+`TOKEN_USAGE_HOME` 必須是專用資料夾；可在其中的 `config.json` 改用其他連接埠。
 
 ## 修改原則
 

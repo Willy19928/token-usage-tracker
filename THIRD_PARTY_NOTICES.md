@@ -3,7 +3,6 @@
 本程式直接使用的套件：
 
 - `modernc.org/sqlite`：BSD-3-Clause
-- `github.com/pelletier/go-toml/v2`：MIT
 - `golang.org/x/sys`：BSD-3-Clause
 - `github.com/klauspost/compress`（僅 `zstd` 解壓縮）：BSD-3-Clause
 

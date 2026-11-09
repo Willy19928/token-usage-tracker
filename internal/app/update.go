@@ -49,7 +49,7 @@ func newUpdater(paths config.Paths) *updater.Manager {
 			}
 			// The helper and the restarted service inherit this, so both resolve
 			// the same state folder even when this copy was started without it.
-			if err := os.Setenv("CODEX_USAGE_HOME", paths.StateDir); err != nil {
+			if err := os.Setenv("TOKEN_USAGE_HOME", paths.StateDir); err != nil {
 				return err
 			}
 			return platform.StartUpdateHelper(helper, path, paths.StateDir, job.Managed)
@@ -76,7 +76,7 @@ func (c CLI) applyUpdate(args []string) error {
 		return err
 	}
 	dir := filepath.Dir(path)
-	root := filepath.Join(paths.StateDir, ".codex-usage-updates")
+	root := filepath.Join(paths.StateDir, ".token-usage-updates")
 	helper, _ := os.Executable()
 	if filepath.Base(path) != "job.json" || filepath.Dir(dir) != root || !strings.HasPrefix(filepath.Base(dir), "run-") || filepath.Dir(helper) != dir {
 		return fmt.Errorf("更新工作檔的位置無效")
@@ -128,11 +128,11 @@ func (c CLI) applyUpdate(args []string) error {
 }
 
 // updatePaths points the update at the program that actually runs. A portable
-// copy is started with CODEX_USAGE_HOME set to its data\codex folder, which
-// would otherwise resolve to a bin folder inside it; the program itself is the
+// copy is started with TOKEN_USAGE_HOME set to its data folder, which would
+// otherwise resolve to a bin folder inside it; the program itself is the
 // installation there. Other installs may record their location at install time.
 func updatePaths(paths config.Paths) config.Paths {
-	if data, ok := config.PortableDataDir(); ok && samePath(filepath.Join(data, "codex"), paths.StateDir) {
+	if data, ok := config.PortableDataDir(); ok && samePath(data, paths.StateDir) {
 		if executable, err := os.Executable(); err == nil {
 			if resolved, err := filepath.EvalSymlinks(executable); err == nil {
 				executable = resolved
@@ -145,7 +145,7 @@ func updatePaths(paths config.Paths) config.Paths {
 	var record struct {
 		Executable string `json:"executable"`
 	}
-	data, err := os.ReadFile(filepath.Join(paths.StateDir, ".codex-usage-install.json"))
+	data, err := os.ReadFile(filepath.Join(paths.StateDir, ".token-usage-install.json"))
 	if err == nil && json.Unmarshal(data, &record) == nil && filepath.IsAbs(record.Executable) && filepath.Base(record.Executable) == filepath.Base(paths.InstalledEXE) {
 		paths.InstalledEXE = filepath.Clean(record.Executable)
 		paths.InstallDir = filepath.Dir(paths.InstalledEXE)
@@ -165,8 +165,8 @@ func samePath(a, b string) bool {
 // failed update can restore all of them from the stopped-service snapshot.
 func updateDataFiles(paths config.Paths) []string {
 	files := []string{paths.ConfigPath}
-	claudeDir, agDir := ledgerDirs()
-	for _, db := range []string{paths.Database, filepath.Join(claudeDir, "usage.sqlite"), filepath.Join(agDir, "usage.sqlite")} {
+	claudeDir, agDir := ledgerDirs(paths)
+	for _, db := range []string{paths.Database, filepath.Join(claudeDir, "usage.sqlite"), filepath.Join(agDir, "usage.sqlite"), filepath.Join(limitsDir(paths), "limits.sqlite")} {
 		files = append(files, db, db+"-wal", db+"-shm", db+"-journal")
 	}
 	return files
@@ -183,7 +183,7 @@ func runUpdate(paths config.Paths, dir string, job updateJob) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	output, err := exec.CommandContext(ctx, candidate, "--version").Output()
-	if err != nil || !strings.HasPrefix(string(output), "codex-usage "+job.Version+" ") {
+	if err != nil || !strings.HasPrefix(string(output), "token-usage "+job.Version+" ") {
 		return "failed", fmt.Errorf("下載的新版無法執行，或版本與預期不符")
 	}
 	cfg, err := config.Load(paths)

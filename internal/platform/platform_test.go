@@ -11,13 +11,13 @@ func TestValidatePurgeStateDirRequiresExactMarker(t *testing.T) {
 	if err := ValidatePurgeStateDir(dir); err == nil {
 		t.Fatal("expected missing marker rejection")
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".codex-usage-state"), []byte("wrong\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".token-usage-state"), []byte("wrong\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := ValidatePurgeStateDir(dir); err == nil {
 		t.Fatal("expected invalid marker rejection")
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".codex-usage-state"), []byte("codex-usage-state-v1\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".token-usage-state"), []byte("token-usage-state-v1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := ValidatePurgeStateDir(dir); err != nil {

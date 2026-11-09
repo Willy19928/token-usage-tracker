@@ -31,7 +31,7 @@
     $("#updateError").textContent = i18n.translateServer(status.error) || "";
     $("#updateError").classList.toggle("hidden", !status.error);
     if (/^https:\/\/github\.com\/Willy19928\/token-usage-tracker\/releases(?:\/tag\/v\d+\.\d+\.\d+)?$/.test(status.release_url)) $("#updateReleaseLink").href = status.release_url;
-    const dismissed = readStorage("codex-usage-update-dismissed") === status.latest_version;
+    const dismissed = readStorage("token-usage-update-dismissed") === status.latest_version;
     $("#updateBanner").classList.toggle("hidden", !status.available || dismissed || busy());
     $("#updateBannerText").textContent = t("update.available", { version: status.latest_version });
   }
@@ -73,7 +73,7 @@
   }
 
   ["#updateButton", "#reviewUpdate"].forEach((id) => $(id).addEventListener("click", () => { openDialog(dialog); refresh(); }));
-  $("#dismissUpdate").addEventListener("click", () => { writeStorage("codex-usage-update-dismissed", status.latest_version); render(); });
+  $("#dismissUpdate").addEventListener("click", () => { writeStorage("token-usage-update-dismissed", status.latest_version); render(); });
   $("#checkUpdates").addEventListener("click", () => action("check", {}));
   $("#autoCheckUpdates").addEventListener("change", (event) => action("preferences", { auto_check: event.target.checked }));
   $("#updateDownloadDir").addEventListener("input", () => { directoryDirty = true; render(); });
@@ -89,7 +89,7 @@
     if (!status?.available || !status.can_install || busy() || pending || directoryDirty) return;
     action("install", { version: status.latest_version, confirm: true });
   });
-  window.addEventListener("codex-usage-locale-change", render);
+  window.addEventListener("token-usage-locale-change", render);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); else schedule(); });
   refresh();
 })();

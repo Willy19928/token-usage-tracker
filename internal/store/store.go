@@ -91,8 +91,6 @@ type Status struct {
 	DatabasePath          string               `json:"database_path"`
 	AccountingMode        string               `json:"accounting_mode"`
 	LastScan              *time.Time           `json:"last_scan,omitempty"`
-	OTelLastReceived      *time.Time           `json:"otel_last_received,omitempty"`
-	OTelActive            bool                 `json:"otel_active"`
 	EventCount            int64                `json:"event_count"`
 	SessionCount          int64                `json:"session_count"`
 	WarningCount          int64                `json:"warning_count"`

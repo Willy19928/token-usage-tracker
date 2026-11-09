@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"tokenusage/internal/ledger"
+	"tokenusage/internal/limits"
 	"tokenusage/internal/model"
 	"tokenusage/internal/pricing"
 	"tokenusage/internal/store"
@@ -35,6 +36,9 @@ type Server struct {
 	Version              string
 	Ledgers              []*ledger.Provider
 	Updates              *updater.Manager
+	Limits               *limits.Manager
+	ClaudeUsageAPI       func() bool
+	SetClaudeUsageAPI    func(bool) error
 	LoadPricingOverrides func() (map[string]pricing.Override, error)
 	SavePricingOverrides func(map[string]pricing.Override) error
 
@@ -47,6 +51,9 @@ type Server struct {
 	sessionEstimateCache boundedCache[sessionEstimateCacheKey, []sessionEstimateResponseItem]
 	pricingRevision      atomic.Uint64
 	scanning             atomic.Bool
+
+	// Ended limit windows' token and cost totals, per provider data revision.
+	limitUsageCache boundedCache[string, map[string]limitUsageTotal]
 }
 
 func (s *Server) URL() string {
@@ -74,6 +81,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/cost-estimate", s.handleCostEstimate)
 	mux.HandleFunc("/api/v1/updates", s.handleUpdates)
 	mux.HandleFunc("/api/v1/updates/", s.handleUpdates)
+	mux.HandleFunc("/api/v1/limits", s.handleLimits)
+	mux.HandleFunc("/api/v1/limits/claude", s.handleLimits)
+	mux.HandleFunc("/api/v1/limits/series", s.handleLimits)
+	mux.HandleFunc("/api/v1/limits/hidden", s.handleLimits)
 	mux.HandleFunc("/api/v1/pricing", s.handlePricing)
 	mux.HandleFunc("/api/v1/pricing/overrides", s.handlePricingOverrides)
 	mux.HandleFunc("/api/v1/rescan", s.handleRescan)

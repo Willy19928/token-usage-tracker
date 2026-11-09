@@ -29,10 +29,10 @@ func TestUpdatePortableServicePreservesAllLedgers(t *testing.T) {
 	}
 	root := t.TempDir()
 	appDir := filepath.Join(root, "Token Usage")
-	stateDir := filepath.Join(appDir, "data", "codex")
+	stateDir := filepath.Join(appDir, "data")
 	home := filepath.Join(root, "codex")
 	claudeHome := filepath.Join(root, "claude")
-	t.Setenv("CODEX_USAGE_HOME", stateDir)
+	t.Setenv("TOKEN_USAGE_HOME", stateDir)
 	t.Setenv("CODEX_HOME", home)
 	t.Setenv("CLAUDE_CONFIG_DIR", claudeHome)
 	t.Setenv("ANTIGRAVITY_TRACKER_HOME", filepath.Join(root, "gemini"))
@@ -61,7 +61,7 @@ func TestUpdatePortableServicePreservesAllLedgers(t *testing.T) {
 	if err = config.EnsureStateMarker(paths); err != nil {
 		t.Fatal(err)
 	}
-	if err = updater.WriteJSON(filepath.Join(stateDir, ".codex-usage-updates.json"), map[string]bool{"auto_check": false}); err != nil {
+	if err = updater.WriteJSON(filepath.Join(stateDir, ".token-usage-updates.json"), map[string]bool{"auto_check": false}); err != nil {
 		t.Fatal(err)
 	}
 	at := time.Now().UTC().Format(time.RFC3339)
@@ -79,8 +79,8 @@ func TestUpdatePortableServicePreservesAllLedgers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	installed := filepath.Join(appDir, "codex-usage")
-	dir := filepath.Join(stateDir, ".codex-usage-updates", "run-integration")
+	installed := filepath.Join(appDir, "token-usage")
+	dir := filepath.Join(stateDir, ".token-usage-updates", "run-integration")
 	if err = os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestUpdatePortableServicePreservesAllLedgers(t *testing.T) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "go", "build", "-trimpath", "-ldflags", "-X tokenusage/internal/app.Version="+version, "-o", out, "../../cmd/codex-usage")
+		cmd := exec.CommandContext(ctx, "go", "build", "-trimpath", "-ldflags", "-X tokenusage/internal/app.Version="+version, "-o", out, "../../cmd/token-usage")
 		if data, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("build: %v %s", err, data)
 		}
@@ -187,7 +187,7 @@ func TestUpdatePortableServicePreservesAllLedgers(t *testing.T) {
 	if err = json.Unmarshal(data, &result); err != nil || result.Phase != "updated" {
 		t.Fatalf("%s %v", data, err)
 	}
-	if output, err := exec.Command(installed, "--version").Output(); err != nil || string(output[:len("codex-usage 2.5.0 ")]) != "codex-usage 2.5.0 " {
+	if output, err := exec.Command(installed, "--version").Output(); err != nil || string(output[:len("token-usage 2.5.0 ")]) != "token-usage 2.5.0 " {
 		t.Fatalf("installed program was not replaced: %s %v", output, err)
 	}
 	for _, name := range []string{"previous-program", "backup-0", "backup-5"} {

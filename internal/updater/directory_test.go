@@ -78,11 +78,11 @@ func TestDownloadUsesSelectedDirectoryAndPrivateStaging(t *testing.T) {
 	}
 	until(t, func() bool { return len(applied) > 0 })
 	private := <-applied
-	if !strings.HasPrefix(private, filepath.Join(m.stateDir, ".codex-usage-updates")+string(os.PathSeparator)) {
+	if !strings.HasPrefix(private, filepath.Join(m.stateDir, ".token-usage-updates")+string(os.PathSeparator)) {
 		t.Fatal("helper staging escaped state directory", private)
 	}
 	s := m.Status()
-	if filepath.Dir(filepath.Dir(s.LastDownload)) != s.DownloadDir || filepath.Base(s.LastDownload) != m.asset || !strings.HasPrefix(filepath.Base(filepath.Dir(s.LastDownload)), "codex-usage-v2.5.0-") {
+	if filepath.Dir(filepath.Dir(s.LastDownload)) != s.DownloadDir || filepath.Base(s.LastDownload) != m.asset || !strings.HasPrefix(filepath.Base(filepath.Dir(s.LastDownload)), "token-usage-v2.5.0-") {
 		t.Fatal(s)
 	}
 	entries, err := os.ReadDir(filepath.Dir(s.LastDownload))

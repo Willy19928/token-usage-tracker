@@ -968,7 +968,7 @@ type agRate struct {
 var agRateCards = map[string][]agRate{
 	"claude-opus-4-6":   {{mustDate("2026-02-05T00:00:00Z"), 5, 25, .5, 6.25}},
 	"claude-opus-5-5":   {{mustDate("2026-09-22T00:00:00Z"), 4, 20, .2, 5}},
-	"claude-sonnet-5-5": {{mustDate("2026-09-28T00:00:00Z"), 2, 10, .1, 2.5}},
+	"claude-sonnet-5-5": {{mustDate("2026-09-28T00:00:00Z"), 2, 10, .2, 2.5}},
 	"claude-sonnet-4-6": {{claudeLaunchRate, 3, 15, .3, 3.75}},
 	"gemini-3.1-pro":    {{mustDate("2026-02-19T00:00:00Z"), 2, 12, .2, 0}},
 	"gemini-4-argon":    {{mustDate("2026-10-13T00:00:00Z"), 2, 10, .1, 0}, {mustDate("2026-12-01T00:00:00Z"), 4, 20, .2, 0}},

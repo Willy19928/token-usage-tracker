@@ -31,7 +31,7 @@ func (s *Store) initTimezone(ctx context.Context) error {
 	var name string
 	err = tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key='accounting_timezone'`).Scan(&name)
 	if errors.Is(err, sql.ErrNoRows) {
-		name = os.Getenv("CODEX_USAGE_TIMEZONE")
+		name = os.Getenv("TOKEN_USAGE_TIMEZONE")
 		if name == "" {
 			name = timezone.Detect()
 		}

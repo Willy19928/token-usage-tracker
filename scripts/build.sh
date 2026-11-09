@@ -3,7 +3,7 @@ set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dist="$project_root/dist"
-version="${VERSION:-1.0.4}"
+version="${VERSION:-1.1.0}"
 build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 commit="$(git -C "$project_root" rev-parse --short HEAD 2>/dev/null || printf source)"
 if git -C "$project_root" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
@@ -21,21 +21,21 @@ for target in windows/amd64 windows/arm64 linux/amd64 linux/arm64 darwin/amd64 d
   arch="${target#*/}"
   suffix=""
   if [[ "$os" == windows ]]; then suffix=".exe"; fi
-  output="$dist/codex-usage-$os-$arch$suffix"
+  output="$dist/token-usage-$os-$arch$suffix"
   CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" "$go_bin" build \
     -trimpath -buildvcs=false \
     -ldflags "-s -w -X tokenusage/internal/app.Version=$version -X tokenusage/internal/app.Commit=$commit -X tokenusage/internal/app.BuildDate=$build_date" \
-    -o "$output" ./cmd/codex-usage
+    -o "$output" ./cmd/token-usage
 done
 
 (
   cd "$dist"
   sha256sum \
-    codex-usage-darwin-amd64 \
-    codex-usage-darwin-arm64 \
-    codex-usage-linux-amd64 \
-    codex-usage-linux-arm64 \
-    codex-usage-windows-amd64.exe \
-    codex-usage-windows-arm64.exe > SHA256SUMS
+    token-usage-darwin-amd64 \
+    token-usage-darwin-arm64 \
+    token-usage-linux-amd64 \
+    token-usage-linux-arm64 \
+    token-usage-windows-amd64.exe \
+    token-usage-windows-arm64.exe > SHA256SUMS
 )
 printf 'Built artifacts in %s\n' "$dist"

@@ -13,7 +13,7 @@ import (
 func TestLaunchAgentEscapesPathsAndSeparatesUpdateHelper(t *testing.T) {
 	t.Setenv("CODEX_HOME", "/tmp/codex & <source>")
 	for _, managed := range []bool{true, false} {
-		body, err := launchPlist("test.label", "/tmp/a & b/codex-usage", "/tmp/state <test>", []string{"daemon"}, managed)
+		body, err := launchPlist("test.label", "/tmp/a & b/token-usage", "/tmp/state <test>", []string{"daemon"}, managed)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -42,7 +42,7 @@ func TestDarwinStopRejectsAnotherExecutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
-	if err := stopDarwinProcess(cmd.Process.Pid, "/tmp/codex-usage"); err == nil {
+	if err := stopDarwinProcess(cmd.Process.Pid, "/tmp/token-usage"); err == nil {
 		t.Fatal("unrelated process was not rejected")
 	}
 }
@@ -76,7 +76,7 @@ func TestDarwinWaitDoesNotSignalReusedPID(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
-	if err := waitDarwinProcessExit(cmd.Process.Pid, "/tmp/previous/codex-usage"); err != nil {
+	if err := waitDarwinProcessExit(cmd.Process.Pid, "/tmp/previous/token-usage"); err != nil {
 		t.Fatal(err)
 	}
 	if err := syscall.Kill(cmd.Process.Pid, 0); err != nil {

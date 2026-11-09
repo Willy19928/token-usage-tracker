@@ -1,6 +1,6 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-const i18n = window.CodexUsageI18n;
+const i18n = window.TokenUsageI18n;
 const t = (key, values) => i18n.t(key, values);
 const serverText = (value) => i18n.translateServer(value);
 
@@ -17,7 +17,7 @@ const FILTER_LABEL_KEYS = { session_id: "filter.session" };
 const fieldLabel = (key) => t(FILTER_FIELDS[key]?.labelKey || FILTER_LABEL_KEYS[key] || `dimension.${key}`);
 const dimensionLabel = (key) => t(`dimension.${key}`);
 const rangeLabel = (key) => t(`range.${key}Long`);
-const DISPLAY_PREFERENCES_KEY = "codex-usage-display-preferences";
+const DISPLAY_PREFERENCES_KEY = "token-usage-display-preferences";
 const PROVIDER_KEY = "token-usage-provider";
 const PROVIDERS = ["all", "claude", "codex", "antigravity"];
 const DISPLAY_PREFERENCE_DEFAULTS = Object.freeze({
@@ -57,7 +57,7 @@ function loadDisplayPreferences() {
   let saved = {};
   try { saved = JSON.parse(readStorage(DISPLAY_PREFERENCES_KEY) || "{}"); } catch {}
   if (!saved || typeof saved !== "object" || Array.isArray(saved)) saved = {};
-  const legacyTheme = readStorage("codex-usage-theme");
+  const legacyTheme = readStorage("token-usage-theme");
   if (!DISPLAY_PREFERENCE_VALUES.theme.includes(saved?.theme) && ["light", "dark"].includes(legacyTheme)) saved.theme = legacyTheme;
   return normalizeDisplayPreferences(saved);
 }
@@ -83,8 +83,8 @@ function applyDisplayPreferences({ persist = false } = {}) {
 
   if (persist) {
     writeStorage(DISPLAY_PREFERENCES_KEY, JSON.stringify(displayPreferences));
-    if (displayPreferences.theme === "system") removeStorage("codex-usage-theme");
-    else writeStorage("codex-usage-theme", displayPreferences.theme);
+    if (displayPreferences.theme === "system") removeStorage("token-usage-theme");
+    else writeStorage("token-usage-theme", displayPreferences.theme);
   }
   syncSettingsForm();
 }
@@ -98,7 +98,7 @@ function updateDisplayPreference(key, value) {
 function resetDisplayPreferences() {
   displayPreferences = { ...DISPLAY_PREFERENCE_DEFAULTS };
   removeStorage(DISPLAY_PREFERENCES_KEY);
-  removeStorage("codex-usage-theme");
+  removeStorage("token-usage-theme");
   applyDisplayPreferences();
   toast(t("settings.resetComplete"));
 }
@@ -106,7 +106,7 @@ function resetDisplayPreferences() {
 const state = {
   provider: "all",
   view: "overview",
-  viewVisited: { overview: true, daily: false, details: false },
+  viewVisited: { overview: true, daily: false, details: false, limits: false },
   overviewRange: "7d",
   customRange: null,
   customRangeLoading: false,
@@ -136,7 +136,16 @@ const state = {
   dataQualityNotes: [],
   sessionSearch: "",
   sessionView: "list", treeOffset: 0, treeItems: [], treeCollapsed: new Set(),
-  requestSerial: { overview: 0, hourly: 0, hourlyContext: 0, daily: 0, day: 0, breakdown: 0, sessions: 0, estimates: 0 }
+  limitsDays: 7,
+  limitsCustom: null,
+  limitsHiddenSeries: new Set(),
+  limitsShowUnknown: false,
+  limitsKind: "fiveHour",
+  limitsOverview: null,
+  limitsAccount: null,
+  limitsHistoryLimit: {},
+  limits: null,
+  requestSerial: { overview: 0, hourly: 0, hourlyContext: 0, daily: 0, day: 0, breakdown: 0, sessions: 0, estimates: 0, limits: 0 }
 };
 
 const responseCache = new Map();
@@ -144,11 +153,15 @@ const inflightRequests = new Map();
 const DATA_CACHE_TTL = 5 * 60_000;
 const VISIBLE_STATUS_POLL_MS = 30_000;
 const HIDDEN_STATUS_POLL_MS = 10 * 60_000;
+const LIMITS_REFRESH_MS = 60_000;
+const LIMITS_HISTORY_PAGE = 30;
+const LIMIT_PROVIDERS = ["codex", "claude", "antigravity"];
 let cacheGeneration = 0;
 let statusPollTimer = null;
 let statusPollRunning = false;
 let sessionSearchTimer = null;
 let hourlyContextTimer = null;
+let limitsRefreshTimer = null;
 
 const reducedMotion = () => displayPreferences.motion === "reduce" || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const pad2 = (value) => String(value).padStart(2, "0");
@@ -344,7 +357,7 @@ const confidenceLabel = (value) => {
 
 async function api(path, options = {}) {
   const method = String(options.method || "GET").toUpperCase();
-  const cacheable = method === "GET" && !path.startsWith("/api/v1/status") && !path.startsWith("/api/v1/warnings") && !path.startsWith("/api/v1/updates");
+  const cacheable = method === "GET" && !path.startsWith("/api/v1/status") && !path.startsWith("/api/v1/warnings") && !path.startsWith("/api/v1/updates") && !path.startsWith("/api/v1/limits");
   const requestGeneration = cacheGeneration;
   const key = `${requestGeneration}:${method} ${path}`;
   if (cacheable) {
@@ -1526,9 +1539,795 @@ function applySessionSearch() {
   loadSessions();
 }
 
+// Limits show the rate-limit windows each tool reports. It follows the shared
+// source switch; "all" charts every tool's limits together.
+const CLAUDE_LIMIT_ORDER = ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet", "seven_day_oauth_apps", "seven_day_cowork"];
+const LIMIT_STATES = ["idle", "running", "ok", "disabled", "signed_out", "closed", "error"];
+const LIMIT_STATE_DOTS = { ok: "live", running: "live", signed_out: "warn", error: "warn" };
+const LIMIT_PROVIDER_NAMES = { codex: "Codex", claude: "Claude Code", antigravity: "Antigravity" };
+const LIMIT_CODES = {
+  command: "claude auth login",
+  credentials: "~/.claude/.credentials.json",
+  configCredentials: "$CLAUDE_CONFIG_DIR/.credentials.json",
+  rateLimits: "rate_limits",
+  auth: "auth.json",
+  usage: "/usage",
+  anthropicHost: "api.anthropic.com",
+  platformHost: "platform.claude.com"
+};
+const LIMIT_NOTE_KEYS = {
+  codex: ["limits.note.codex.source", "limits.note.codex.account", "limits.note.codex.history"],
+  claude: ["limits.note.claude.source", "limits.note.claude.login", "limits.note.claude.scope"],
+  antigravity: ["limits.note.antigravity.source", "limits.note.antigravity.closed", "limits.note.antigravity.pools"]
+};
+
+// Go reports a missing time as year 1, which lands before the Unix epoch.
+const validTime = (value) => {
+  const time = value ? new Date(value).getTime() : NaN;
+  return Number.isFinite(time) && time > 0;
+};
+const limitPercentValue = (value) => Math.min(100, Math.max(0, Number(value) || 0));
+const limitPercent = (value) => `${i18n.formatNumber(limitPercentValue(value), { maximumFractionDigits: 1 })}%`;
+const joinList = (items) => items.join(i18n.getLocale() === "en" ? ", " : "、");
+// Codex reports ChatGPT's internal plan ids; these are the names its own UI
+// shows. "team" is ChatGPT Business since its rename, while "business" is an
+// Enterprise plan. Claude and Antigravity already send display names.
+const CODEX_PLAN_NAMES = {
+  free: "Free", free_workspace: "Free", go: "Go", plus: "Plus", prolite: "Pro 100", pro: "Pro 200", promax: "Pro 500",
+  team: "Business", self_serve_business_usage_based: "Business", self_serve_business_prolite: "Business Premium",
+  business: "Enterprise", ent26: "Enterprise", enterprise: "Enterprise", hc: "Enterprise", enterprise_cbp_usage_based: "Enterprise",
+  enterprise_cbp_automation: "Enterprise (Automation)", enterprise_cbp_trial: "Enterprise (Trial)", finserv: "Enterprise",
+  edu: "Edu", education: "Edu", edu_plus: "Edu Plus", edu_pro: "Edu Pro", sci: "Academic Researchers", sci_plus: "Academic Researchers Plus",
+  k12: "K-12", guest: "Guest"
+};
+const planName = (value = "", provider = "") => {
+  if (!value || value === "unknown") return "";
+  if (provider === "codex" && CODEX_PLAN_NAMES[value.toLowerCase()]) return CODEX_PLAN_NAMES[value.toLowerCase()];
+  return value.charAt(0).toUpperCase() + value.slice(1);
+};
+const translatedOr = (key, fallback) => { const text = t(key); return text === key ? fallback : text; };
+
+// Escapes a catalog entry, then renders its {name} slots as inline code.
+function codeText(key, codes = LIMIT_CODES) {
+  const slots = Object.fromEntries(Object.keys(codes).map((name) => [name, `{${name}}`]));
+  let html = escapeHTML(t(key, slots));
+  for (const [name, value] of Object.entries(codes)) html = html.replaceAll(`{${name}}`, `<code>${escapeHTML(value)}</code>`);
+  return html;
+}
+
+function limitTime(value, options = {}) {
+  if (!validTime(value)) return "—";
+  const date = new Date(value);
+  const year = date.getFullYear() === new Date().getFullYear() ? {} : { year: "numeric" };
+  return i18n.formatDateTime(date, { timeZone: measurementTimezone, ...year, month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", ...options });
+}
+
+function limitPeriod(start, end) {
+  if (!validTime(start)) return limitTime(end);
+  if (!validTime(end)) return limitTime(start);
+  const sameDay = measuredDateKey(new Date(start)) === measuredDateKey(new Date(end));
+  const endText = sameDay
+    ? i18n.formatDateTime(new Date(end), { timeZone: measurementTimezone, hour: "2-digit", minute: "2-digit" })
+    : limitTime(end);
+  return `${limitTime(start)} – ${endText}`;
+}
+
+function limitDuration(milliseconds) {
+  const total = Math.max(1, Math.ceil(milliseconds / 60_000));
+  const days = Math.floor(total / 1440);
+  const hours = Math.floor((total % 1440) / 60);
+  const minutes = total % 60;
+  if (days) return t("limits.duration.days", { days: i18n.formatNumber(days), hours: i18n.formatNumber(hours) });
+  if (hours) return t("limits.duration.hours", { hours: i18n.formatNumber(hours), minutes: i18n.formatNumber(minutes) });
+  return t("limits.duration.minutes", { minutes: i18n.formatNumber(minutes) });
+}
+
+function limitWindowName(minutes) {
+  const value = Number(minutes) || 0;
+  if (value === 300) return t("limits.window.fiveHour");
+  if (value === 10080) return t("limits.window.weekly");
+  if (value > 0 && value % 1440 === 0) return t("limits.window.days", { count: i18n.formatNumber(value / 1440) });
+  if (value > 0 && value % 60 === 0) return t("limits.window.hours", { count: i18n.formatNumber(value / 60) });
+  if (value > 0) return t("limits.window.minutes", { count: i18n.formatNumber(value) });
+  return t("limits.window.unknown");
+}
+
+// Claude names each limit by key; Codex and Antigravity name the window length
+// and list the folded limits (Antigravity model names) underneath.
+function limitTitle(provider, window) {
+  const keys = window.keys || [];
+  const labels = window.labels || [];
+  if (provider === "claude") {
+    const names = keys.map((key, index) => {
+      const id = String(key).split(":").pop();
+      return translatedOr(`limits.claude.${id}`, labels[index] || id);
+    });
+    return { title: joinList([...new Set(names)]) || limitWindowName(window.window_minutes), detail: "" };
+  }
+  // Antigravity names its model groups in English; known ones are translated.
+  const detail = labels.filter((label) => label && label.toLowerCase() !== provider)
+    .map((label) => provider === "antigravity" ? translatedOr(`limits.agGroup.${label}`, label) : label);
+  return { title: limitWindowName(window.window_minutes), detail: joinList([...new Set(detail)]) };
+}
+
+function limitOrder(provider, window) {
+  if (provider === "claude") {
+    const index = CLAUDE_LIMIT_ORDER.indexOf(String(window.keys?.[0] || "").split(":").pop());
+    return index < 0 ? CLAUDE_LIMIT_ORDER.length : index;
+  }
+  return Number(window.window_minutes) || Number.MAX_SAFE_INTEGER;
+}
+
+// Accounts seen before tracking began are still told apart by their plan and
+// the reset of their longest window, until a tracked reading claims them.
+function limitAccountLabel(payload, id) {
+  if (!id) return t("limits.account.unrecorded");
+  const account = (payload.accounts || []).find((item) => item.id === id);
+  // Unidentified accounts are only known by plan; each row names its own window.
+  if (account?.unknown || id.startsWith("history:")) {
+    const plan = planName(account?.plan || id.split(":")[1] || "", payload.provider);
+    return plan ? t("limits.account.unknownPlan", { plan }) : t("limits.account.unknown");
+  }
+  return account?.email || id;
+}
+
+function limitAccountPlan(payload, id, window) {
+  if (id.startsWith("history:")) return "";
+  const account = (payload.accounts || []).find((item) => item.id === id);
+  return planName(account?.plan || window?.plan || "", payload.provider);
+}
+
+// Signed-in accounts first, newest first; then the unknown ones.
+function limitAccountIds(payload) {
+  const accounts = [...(payload.accounts || [])]
+    .sort((a, b) => Number(Boolean(a.unknown)) - Number(Boolean(b.unknown)) || String(b.last_seen || "").localeCompare(String(a.last_seen || "")));
+  const seen = [...(payload.current || []), ...(payload.windows || [])].map((window) => window.account || "");
+  const ids = [...new Set([...accounts.map((account) => account.id), ...seen.filter((id) => id)])];
+  if (seen.includes("")) ids.push("");
+  return ids;
+}
+
+// Each unidentified account spans one window, so the filter offers one choice
+// per plan ("history:<plan>:") while every row still names its own window.
+const LIMIT_UNKNOWN_FILTER = "history:";
+const limitAccountMatches = (filter, id = "") => filter === null || (filter.startsWith(LIMIT_UNKNOWN_FILTER) && filter.endsWith(":") ? id.startsWith(filter) : id === filter);
+
+function renderLimitsAccounts(payload) {
+  const select = $("#limitsAccount");
+  const ids = limitAccountIds(payload);
+  const known = ids.filter((id) => !id.startsWith(LIMIT_UNKNOWN_FILTER));
+  const plans = new Map();
+  for (const id of ids.filter((item) => item.startsWith(LIMIT_UNKNOWN_FILTER))) {
+    const prefix = `${LIMIT_UNKNOWN_FILTER}${id.split(":")[1] || ""}:`;
+    plans.set(prefix, (plans.get(prefix) || 0) + 1);
+  }
+  const choices = [...known, ...plans.keys()];
+  if (state.limitsAccount !== null && !choices.includes(state.limitsAccount)) state.limitsAccount = null;
+  select.innerHTML = `<option value="">${escapeHTML(t("limits.allAccounts"))}</option>${choices.map((id) => {
+    if (plans.has(id)) {
+      const plan = planName(id.split(":")[1] || "", payload.provider);
+      const label = plan ? t("limits.account.unknownPlanAll", { plan, count: i18n.formatNumber(plans.get(id)) }) : t("limits.account.unknownNoPlanAll", { count: i18n.formatNumber(plans.get(id)) });
+      return `<option value="a:${escapeHTML(id)}">${escapeHTML(label)}</option>`;
+    }
+    const plan = limitAccountPlan(payload, id);
+    const label = plan ? `${limitAccountLabel(payload, id)} · ${plan}` : limitAccountLabel(payload, id);
+    return `<option value="a:${escapeHTML(id)}">${escapeHTML(label)}</option>`;
+  }).join("")}`;
+  select.value = state.limitsAccount === null ? "" : `a:${state.limitsAccount}`;
+  select.disabled = choices.length === 0;
+}
+
+function renderLimitsStatus(payload) {
+  const provider = payload.provider;
+  const status = payload.status || {};
+  const name = status.state || "idle";
+  const label = LIMIT_STATES.includes(name) ? t(`limits.state.${name}`) : name;
+  const detailKey = translatedOr(`limits.stateDetail.${provider}.${name}`, "") ? `limits.stateDetail.${provider}.${name}` : `limits.stateDetail.${name}`;
+  const detail = t(detailKey) === detailKey ? "" : codeText(detailKey);
+  const meta = [];
+  if (name !== "disabled" || validTime(status.last_success)) {
+    meta.push([t("limits.lastSuccess"), validTime(status.last_success) ? limitTime(status.last_success) : t("limits.never")]);
+  }
+  if (name === "error" && validTime(status.last_attempt)) meta.push([t("limits.lastAttempt"), limitTime(status.last_attempt)]);
+  const error = status.error ? `<p class="limits-error">${escapeHTML(serverText(status.error))}</p>` : "";
+  $("#limitsStatus").innerHTML = `<div class="limits-status-row">
+      <span class="status-dot ${LIMIT_STATE_DOTS[name] || "neutral"}" aria-hidden="true"></span>
+      <div class="limits-status-copy"><strong>${escapeHTML(label)}</strong>${detail ? `<p>${detail}</p>` : ""}${error}</div>
+      ${meta.length ? `<dl class="limits-status-meta">${meta.map(([term, value]) => `<div><dt>${escapeHTML(term)}</dt><dd>${escapeHTML(value)}</dd></div>`).join("")}</dl>` : ""}
+    </div>${provider === "claude" ? claudeLimitsControl(payload) : ""}`;
+}
+
+// Enabling reads and refreshes Claude Code's saved login, so the switch spells
+// out exactly what happens before the button and stays reachable afterwards.
+function claudeLimitsControl(payload) {
+  if (payload.claude_enabled) {
+    return `<div class="limits-claude-toggle"><p>${escapeHTML(t("limits.claude.enabledNote"))}</p><button class="action-button quiet pressable" type="button" data-claude-limits="off">${escapeHTML(t("limits.claude.disable"))}</button></div>`;
+  }
+  const items = ["limits.consent.reads", "limits.consent.refresh", "limits.consent.hosts", "limits.consent.login", "limits.consent.macos", "limits.consent.scope"];
+  return `<div class="limits-consent">
+      <h3>${escapeHTML(t("limits.consent.title"))}</h3>
+      <p>${codeText("limits.consent.intro")}</p>
+      <ul>${items.map((key) => `<li>${codeText(key)}</li>`).join("")}</ul>
+      <div class="limits-consent-actions"><button class="action-button primary pressable" type="button" data-claude-limits="on">${escapeHTML(t("limits.claude.enable"))}</button><small>${escapeHTML(t("limits.consent.reversible"))}</small></div>
+    </div>`;
+}
+
+function limitsEmptyText(payload, kind) {
+  const name = payload.status?.state;
+  if (state.limitsAccount !== null) return t(`limits.empty.${kind}Account`);
+  if (kind === "current") {
+    if (payload.provider === "claude" && !payload.claude_enabled) return t("limits.empty.claudeDisabled");
+    if (payload.provider === "claude" && name === "signed_out") return t("limits.empty.claudeSignedOut");
+    if (payload.provider === "antigravity" && name === "closed") return t("limits.empty.antigravityClosed");
+    if (name === "idle" || name === "running") return t("limits.empty.idle");
+    if (payload.provider === "codex") return t("limits.empty.codexCurrent");
+  }
+  return t(`limits.empty.${kind}`);
+}
+
+// Tokens used so far in a window and their API-equivalent cost; absent when
+// the limit's models can't be told apart.
+function limitTokensLine(window) {
+  if (window.tokens == null) return "";
+  const cost = window.estimate ? `<small class="limit-tokens" title="${escapeHTML(estimateLabel(window.estimate))}">${escapeHTML(t("limits.windowCost", { cost: estimateDisplay(window.estimate) }))}</small>` : "";
+  return `<small class="limit-tokens" title="${escapeHTML(t("limits.tokensExact", { tokens: fullToken(window.tokens) }))}">${escapeHTML(t("limits.windowTokens", { tokens: formatToken(window.tokens) }))}</small>${cost}`;
+}
+
+// In a model row the row names the group, so a card names only its window.
+function limitCard(payload, window, { inRow = false } = {}) {
+  const named = limitTitle(payload.provider, window);
+  const title = inRow ? limitWindowName(window.window_minutes) : named.title;
+  const detail = inRow ? "" : named.detail;
+  const last = limitPercentValue(window.last_percent);
+  const max = limitPercentValue(window.max_percent);
+  const level = last >= 90 ? " critical" : last >= 70 ? " high" : "";
+  const resetsAt = validTime(window.resets_at) ? new Date(window.resets_at) : null;
+  const remaining = resetsAt ? resetsAt.getTime() - Date.now() : NaN;
+  const countdown = !resetsAt ? "" : remaining > 0 ? t("limits.countdown", { time: limitDuration(remaining) }) : t("limits.resetDue");
+  // A tool may stop reporting a limit while another one binds (Antigravity's
+  // weekly quota under its 5-hour one); show when this one was last read.
+  const stale = validTime(window.last_seen) && Date.now() - new Date(window.last_seen).getTime() > 15 * 60_000;
+  return `<article class="limit-card${level}">
+      <div class="limit-card-head">
+        <div class="limit-card-title"><strong>${escapeHTML(title)}</strong>${detail ? `<small title="${escapeHTML(detail)}">${escapeHTML(detail)}</small>` : ""}</div>
+        <div class="limit-card-value"><b>${escapeHTML(limitPercent(last))}</b>${max > last ? `<small>${escapeHTML(t("limits.peak", { percent: limitPercent(max) }))}</small>` : ""}</div>
+      </div>
+      <div class="limit-meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${last}" aria-label="${escapeHTML(t("limits.usedAria", { title, percent: limitPercent(last) }))}"><i style="width:${last}%"></i>${max > last ? `<span class="limit-peak" style="left:${max}%" title="${escapeHTML(t("limits.peak", { percent: limitPercent(max) }))}"></span>` : ""}</div>
+      <div class="limit-card-foot">
+        <time datetime="${escapeHTML(window.resets_at || "")}">${escapeHTML(resetsAt ? t("limits.resetsAt", { time: limitTime(window.resets_at) }) : t("limits.resetUnknown"))}</time>
+        ${countdown ? `<strong>${escapeHTML(countdown)}</strong>` : ""}
+      </div>
+      ${limitTokensLine(window)}
+      ${stale ? `<small class="limit-card-stale">${escapeHTML(t("limits.readAt", { time: limitTime(window.last_seen) }))}</small>` : ""}
+    </article>`;
+}
+
+// The overview's merged card: one model group, its 5-hour and weekly limits read together.
+function limitModelCard(payload, row, { compact = false } = {}) {
+  const lines = row.slots.filter(Boolean).map((window) => {
+    const title = limitWindowName(window.window_minutes);
+    const last = limitPercentValue(window.last_percent);
+    const max = limitPercentValue(window.max_percent);
+    const level = last >= 90 ? " critical" : last >= 70 ? " high" : "";
+    const resetsAt = validTime(window.resets_at) ? new Date(window.resets_at) : null;
+    const remaining = resetsAt ? resetsAt.getTime() - Date.now() : NaN;
+    const countdown = !resetsAt ? "" : remaining > 0 ? t("limits.countdown", { time: limitDuration(remaining) }) : t("limits.resetDue");
+    // A tool may stop reporting a limit while another one binds; say when it was read.
+    const stale = validTime(window.last_seen) && Date.now() - new Date(window.last_seen).getTime() > 15 * 60_000;
+    return `<div class="limit-line${level}">
+        <div class="limit-line-head"><span>${escapeHTML(title)}</span><b>${escapeHTML(limitPercent(last))}</b></div>
+        <div class="limit-meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${last}" aria-label="${escapeHTML(t("limits.usedAria", { title: `${row.name || t("limits.window.allModels")} · ${title}`, percent: limitPercent(last) }))}"><i style="width:${last}%"></i>${max > last ? `<span class="limit-peak" style="left:${max}%" title="${escapeHTML(t("limits.peak", { percent: limitPercent(max) }))}"></span>` : ""}</div>
+        <div class="limit-line-foot">${compact ? "" : `<time datetime="${escapeHTML(window.resets_at || "")}">${escapeHTML(resetsAt ? t("limits.resetsAt", { time: limitTime(window.resets_at) }) : t("limits.resetUnknown"))}</time>`}${countdown ? `<strong>${escapeHTML(countdown)}</strong>` : ""}</div>
+        ${limitTokensLine(window)}
+        ${stale ? `<small class="limit-card-stale">${escapeHTML(t("limits.readAt", { time: limitTime(window.last_seen) }))}</small>` : ""}
+      </div>`;
+  }).join("");
+  return `<article class="limit-card limit-model-card${compact ? " compact" : ""}">
+      <h4>${escapeHTML(row.name || t("limits.window.allModels"))}</h4>
+      ${lines}
+    </article>`;
+}
+
+// Current is each limit's latest reading, untouched ones at 0% included; one past
+// its reset reads 0% until the next reading.
+function renderLimitsCurrent(payload, active) {
+  const container = $("#limitsCurrent");
+  $("#limitsCurrentMeta").textContent = active.length ? t("limits.currentMeta", { count: i18n.formatNumber(active.length) }) : "";
+  // A removed account picked in the filter says so and can be returned.
+  const picked = state.limitsAccount === null ? null : (payload.accounts || []).find((account) => account.id === state.limitsAccount);
+  if (picked?.hidden) {
+    container.innerHTML = `<div class="empty-state">${escapeHTML(t("limits.hiddenNote"))}
+        <div><button class="action-button quiet pressable" type="button" data-limits-unhide="${escapeHTML(picked.id)}">${escapeHTML(t("limits.unhide"))}</button></div>
+      </div>`;
+    bindLimitHide(container, payload);
+    return;
+  }
+  if (!active.length) {
+    container.innerHTML = `<div class="empty-state">${escapeHTML(limitsEmptyText(payload, "current"))}</div>`;
+    return;
+  }
+  const groups = new Map(limitAccountIds(payload).map((id) => [id, []]));
+  for (const window of active) {
+    const id = window.account || "";
+    if (!groups.has(id)) groups.set(id, []);
+    groups.get(id).push(window);
+  }
+  container.innerHTML = [...groups].filter(([, items]) => items.length).map(([id, items]) => {
+    const plan = limitAccountPlan(payload, id, items[0]);
+    const label = limitAccountLabel(payload, id);
+    const rows = limitModelRows(payload.provider, items);
+    const remove = id && !id.startsWith(LIMIT_UNKNOWN_FILTER)
+      ? `<button class="text-button pressable limits-hide" type="button" data-limits-hide="${escapeHTML(id)}" title="${escapeHTML(t("limits.hideTitle"))}">${escapeHTML(t("limits.hide"))}</button>`
+      : "";
+    return `<section class="limits-account-group">
+        <h3 class="limits-account-head"><span title="${escapeHTML(label)}">${escapeHTML(label)}</span>${plan ? `<b class="limits-plan">${escapeHTML(plan)}</b>` : ""}${remove}</h3>
+        ${rows.map((row) => `<div class="limits-model-row">
+            ${rows.length > 1 || row.name ? `<h4>${escapeHTML(row.name || t("limits.window.allModels"))}</h4>` : ""}
+            <div class="limits-cards limits-row-cards">${row.slots.map((window) => window
+              ? limitCard(payload, window, { inRow: true })
+              : `<div class="limit-card limit-card-empty">${escapeHTML(t("limits.window.none"))}</div>`).join("")}</div>
+          </div>`).join("")}
+      </section>`;
+  }).join("");
+  bindLimitHide(container, payload);
+}
+
+// Removing an account takes it out of current here and in the overview until
+// a newer reading of it arrives; returning it undoes that.
+function bindLimitHide(container, payload) {
+  const update = async (button, account, hidden) => {
+    button.disabled = true;
+    const label = limitAccountLabel(payload, account);
+    try {
+      await api("/api/v1/limits/hidden", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: payload.provider, account, hidden })
+      });
+      toast(t(hidden ? "limits.hiddenToast" : "limits.unhiddenToast", { account: label }));
+      await loadLimits({ preserve: true });
+    } catch (error) {
+      button.disabled = false;
+      toast(t("limits.hideError", { error: error.message }), true);
+    }
+  };
+  $$("[data-limits-hide]", container).forEach((button) => button.addEventListener("click", () => update(button, button.dataset.limitsHide, true)));
+  $$("[data-limits-unhide]", container).forEach((button) => button.addEventListener("click", () => update(button, button.dataset.limitsUnhide, false)));
+}
+
+// One row per model group (Antigravity's groups, Claude's model-specific
+// limits), with the 5-hour limit and the weekly one side by side.
+function limitModelRows(provider, items) {
+  const rows = new Map();
+  for (const window of items) {
+    const { detail } = limitTitle(provider, window);
+    let name = detail;
+    if (provider === "claude") {
+      const key = String(window.keys?.[0] || "");
+      name = ["five_hour", "seven_day"].includes(key) ? "" : key.includes(":") ? window.labels?.[0] || key : translatedOr(`limits.claudeModel.${key}`, key);
+    }
+    if (!rows.has(name)) rows.set(name, []);
+    rows.get(name).push(window);
+  }
+  return [...rows].map(([name, windows]) => {
+    const fiveHour = windows.find((window) => Number(window.window_minutes) === 300);
+    const weekly = windows.find((window) => Number(window.window_minutes) === 10080);
+    const rest = windows.filter((window) => window !== fiveHour && window !== weekly);
+    // Keep the columns aligned when a group has only one of the two limits.
+    const slots = fiveHour || weekly ? [fiveHour || null, weekly || null, ...rest] : rest;
+    return { name, slots, order: Math.min(...windows.map((window) => limitOrder(provider, window))) };
+  }).sort((a, b) => Number(Boolean(a.name)) - Number(Boolean(b.name)) || a.order - b.order || a.name.localeCompare(b.name));
+}
+
+// Past windows, the 5-hour ones and the weekly ones each in their own list.
+const LIMIT_HISTORY_KINDS = [
+  { key: "fiveHour", match: (minutes) => minutes === 300 },
+  { key: "weekly", match: (minutes) => minutes === 10080 },
+  { key: "other", match: (minutes) => minutes !== 300 && minutes !== 10080 }
+];
+
+// The 5-hour and weekly limits are shown one at a time, switched by buttons;
+// the chart and the history share the choice.
+function limitKindSwitch(kinds) {
+  if (kinds.length < 2) return "";
+  return `<div class="segmented limits-kind" role="tablist" aria-label="${escapeHTML(t("limits.kindAria"))}">${kinds.map((kind) => `<button class="pressable${kind.key === state.limitsKind ? " selected" : ""}" type="button" role="tab" aria-selected="${kind.key === state.limitsKind}" data-limits-kind="${kind.key}">${escapeHTML(t(`limits.chart.group.${kind.key}`))}<small>${escapeHTML(i18n.formatNumber(kind.count))}</small></button>`).join("")}</div>`;
+}
+
+// Keeps the shared choice on a kind that has data, preferring the current one.
+function pickLimitKind(kinds) {
+  if (kinds.length && !kinds.some((kind) => kind.key === state.limitsKind)) state.limitsKind = kinds[0].key;
+}
+
+function bindLimitKindSwitch(container, redraw) {
+  $$("[data-limits-kind]", container).forEach((button) => button.addEventListener("click", () => {
+    state.limitsKind = button.dataset.limitsKind;
+    redraw();
+  }));
+}
+
+function renderLimitsHistory(payload, windows) {
+  const container = $("#limitsHistory");
+  const past = windows.filter((window) => !window.active);
+  $("#limitsHistoryMeta").textContent = past.length ? t("limits.historyMeta", { count: i18n.formatNumber(past.length) }) : "";
+  if (!past.length) {
+    container.innerHTML = `<div class="empty-state">${escapeHTML(limitsEmptyText(payload, "history"))}</div>`;
+    return;
+  }
+  const mobileLabel = (key) => `<span class="limits-mobile-label">${escapeHTML(t(key))}</span>`;
+  const head = `<div class="limits-history-head" aria-hidden="true"><span>${escapeHTML(t("limits.account"))}</span><span>${escapeHTML(t("limits.headerWindow"))}</span><span>${escapeHTML(t("limits.headerPeriod"))}</span><span>${escapeHTML(t("limits.headerMax"))}</span><span>${escapeHTML(t("limits.headerTokens"))}</span><span>${escapeHTML(t("limits.headerCost"))}</span></div>`;
+  // Both the 5-hour and the weekly button are always there, so every tool's
+  // history looks alike before its first weekly window has ended.
+  const kinds = LIMIT_HISTORY_KINDS.map((kind) => ({ ...kind, rows: past.filter((window) => kind.match(Number(window.window_minutes) || 0)) }))
+    .filter((kind) => kind.key !== "other" || kind.rows.length).map((kind) => ({ ...kind, count: kind.rows.length }));
+  pickLimitKind(kinds);
+  container.innerHTML = limitKindSwitch(kinds) + kinds.filter((kind) => kind.key === state.limitsKind).map((kind) => {
+    const rows = kind.rows;
+    if (!rows.length) return `<div class="empty-state">${escapeHTML(t(`limits.historyEmpty.${kind.key}`))}</div>`;
+    const limit = state.limitsHistoryLimit[kind.key] || LIMITS_HISTORY_PAGE;
+    const remaining = rows.length - limit;
+    const more = remaining > 0
+      ? `<div class="limits-more"><button class="action-button quiet pressable" type="button" data-limits-more="${kind.key}">${escapeHTML(t("limits.showMore", { count: i18n.formatNumber(Math.min(remaining, LIMITS_HISTORY_PAGE)), remaining: i18n.formatNumber(remaining) }))}</button></div>`
+      : "";
+    return `<section class="limits-history-block">
+        ${head}
+        <div class="limits-history-list">${rows.slice(0, limit).map((window) => {
+          const id = window.account || "";
+          const label = limitAccountLabel(payload, id);
+          const plan = limitAccountPlan(payload, id, window);
+          const { title, detail } = limitTitle(payload.provider, window);
+          const max = limitPercentValue(window.max_percent);
+          const hasTokens = window.tokens != null;
+          return `<div class="limits-history-row">
+              <div class="limits-cell">${mobileLabel("limits.account")}<strong title="${escapeHTML(label)}">${escapeHTML(label)}</strong>${plan ? `<small>${escapeHTML(plan)}</small>` : ""}</div>
+              <div class="limits-cell">${mobileLabel("limits.headerWindow")}<strong>${escapeHTML(detail || title)}</strong>${detail ? `<small>${escapeHTML(title)}</small>` : ""}</div>
+              <div class="limits-cell limits-period">${mobileLabel("limits.headerPeriod")}<span>${escapeHTML(limitPeriod(window.starts_at, window.ended_at || window.resets_at))}</span>${window.ended_at ? `<small title="${escapeHTML(t("limits.earlyResetDetail", { time: limitTime(window.resets_at) }))}">${escapeHTML(t("limits.earlyReset"))}</small>` : ""}</div>
+              <div class="limits-metric">${mobileLabel("limits.headerMax")}<strong>${escapeHTML(limitPercent(max))}</strong><span class="limit-mini${max >= 90 ? " critical" : max >= 70 ? " high" : ""}" aria-hidden="true"><i style="width:${max}%"></i></span></div>
+              <div class="limits-metric">${mobileLabel("limits.headerTokens")}<strong${hasTokens ? ` title="${escapeHTML(t("limits.tokensExact", { tokens: fullToken(window.tokens) }))}"` : ""}>${hasTokens ? escapeHTML(formatToken(window.tokens)) : "—"}</strong></div>
+              <div class="limits-metric">${mobileLabel("limits.headerCost")}<strong${window.estimate ? ` title="${escapeHTML(estimateLabel(window.estimate))}"` : ""}>${window.estimate ? escapeHTML(estimateDisplay(window.estimate)) : "—"}</strong></div>
+            </div>`;
+        }).join("")}${more}</div>
+      </section>`;
+  }).join("");
+  bindLimitKindSwitch(container, renderLimits);
+}
+
+function renderLimitsNote(provider) {
+  const keys = [...(LIMIT_NOTE_KEYS[provider] || []), "limits.note.tokens"];
+  $("#limitsNote").innerHTML = `<ul class="limits-note-list">${keys.map((key) => `<li>${codeText(key)}</li>`).join("")}</ul>`;
+}
+
+function renderLimits() {
+  const payload = state.limits;
+  if (!payload) return;
+  renderLimitsAccounts(payload);
+  const mine = (window) => limitAccountMatches(state.limitsAccount, window.account || "");
+  renderLimitsStatus(payload);
+  renderLimitsCurrent(payload, (payload.current || []).filter(mine));
+  renderLimitsHistory(payload, (payload.windows || []).filter(mine));
+}
+
+function scheduleLimitsRefresh(delay = LIMITS_REFRESH_MS) {
+  clearTimeout(limitsRefreshTimer);
+  if (state.view !== "limits" || document.visibilityState !== "visible") return;
+  limitsRefreshTimer = setTimeout(() => { if (state.view === "limits") loadLimits({ preserve: true }); }, delay);
+}
+
+// The overview chart: every limit's recorded readings, one color per tool and
+// one dash per window length. A change of reset time starts a new window, so
+// each window is its own step line that ends at its reset.
+const limitSeriesId = (series) => `${series.provider}|${series.account}|${series.key}`;
+
+function limitSeriesName(series, payloads) {
+  const payload = payloads[series.provider] || { provider: series.provider, accounts: [] };
+  const { title, detail } = limitTitle(series.provider, { keys: [series.key], labels: [series.label], window_minutes: series.window_minutes });
+  const accounts = new Set((payloads.series || []).filter((item) => item.provider === series.provider).map((item) => item.account));
+  const account = accounts.size > 1 ? series.email || limitAccountLabel(payload, series.account) : "";
+  return [LIMIT_PROVIDER_NAMES[series.provider], detail || title, detail ? title : "", account].filter(Boolean).join(" · ");
+}
+
+// Reported reset times drift by a few seconds within one window, as in the store.
+const LIMIT_RESET_TOLERANCE_MS = 2 * 60_000;
+
+// Splits a series into its windows. A window's line ends at its reset, or
+// where the next window began when an early reset started that one sooner.
+function limitSegments(series, until) {
+  const segments = [];
+  for (const point of series.points || []) {
+    const resets = new Date(point.resets_at).getTime();
+    let segment = segments.find((item) => Math.abs(item.resets - resets) <= LIMIT_RESET_TOLERANCE_MS);
+    if (!segment) segments.push(segment = { resets, points: [] });
+    segment.points.push(point);
+  }
+  for (const segment of segments) {
+    segment.points.sort((a, b) => new Date(a.t) - new Date(b.t));
+    segment.first = new Date(segment.points[0].t).getTime();
+  }
+  segments.sort((a, b) => a.first - b.first);
+  return segments.map((segment, index) => {
+    const next = segments[index + 1];
+    let end = Math.min(segment.resets, until);
+    if (next && next.first < end) end = Math.max(segment.first, next.first);
+    return { points: segment.points, first: segment.first, end };
+  });
+}
+
+function limitValueAt(series, time, until) {
+  const segment = limitSegments(series, until).filter((item) => time >= item.first && time <= item.end).at(-1);
+  const point = segment && [...segment.points].reverse().find((item) => new Date(item.t).getTime() <= time);
+  return point ? { point, resets: point.resets_at } : null;
+}
+
+// Draws one chart per window length: 5-hour limits and weekly limits read
+// differently, and mixing them made both unreadable. Unidentified accounts
+// are hidden until asked for, so the signed-in accounts stay legible.
+const LIMIT_CHART_GROUPS = [
+  { key: "fiveHour", match: (minutes) => minutes === 300 },
+  { key: "weekly", match: (minutes) => minutes === 10080 },
+  { key: "other", match: (minutes) => minutes !== 300 && minutes !== 10080 }
+];
+const isUnknownAccount = (id = "") => id.startsWith("history:");
+
+function renderLimitsChart(data, payloads) {
+  const container = $("#limitsChart");
+  const since = new Date(data.since).getTime();
+  const until = new Date(data.until).getTime();
+  const all = (data.series || []).filter((item) => (item.points || []).length)
+    .sort((a, b) => LIMIT_PROVIDERS.indexOf(a.provider) - LIMIT_PROVIDERS.indexOf(b.provider) || String(a.account).localeCompare(String(b.account)) || String(a.key).localeCompare(String(b.key)));
+  payloads.series = all;
+  const unknown = all.filter((item) => isUnknownAccount(item.account));
+  const series = state.limitsShowUnknown ? all : all.filter((item) => !isUnknownAccount(item.account));
+  $("#limitsChartMeta").textContent = series.length ? t("limits.chart.meta", { count: i18n.formatNumber(series.length) }) : "";
+  const toggle = unknown.length
+    ? `<button class="text-button pressable limits-unknown-toggle" type="button" data-limits-unknown aria-pressed="${state.limitsShowUnknown}">${escapeHTML(t(state.limitsShowUnknown ? "limits.chart.hideUnknown" : "limits.chart.showUnknown", { count: i18n.formatNumber(unknown.length) }))}</button>`
+    : "";
+  const available = LIMIT_CHART_GROUPS.map((group) => ({ ...group, series: series.filter((item) => group.match(Number(item.window_minutes) || 0)) }))
+    .filter((group) => group.series.length).map((group) => ({ ...group, count: group.series.length }));
+  pickLimitKind(available);
+  const groups = available.filter((group) => group.key === state.limitsKind);
+  container.innerHTML = limitKindSwitch(available) + (groups.length
+    ? groups.map((group) => `<section class="limits-chart-group" data-limits-group="${group.key}">
+        <div class="limits-chart-body"></div>
+        <div class="limits-legend"></div>
+      </section>`).join("")
+    : `<div class="empty-state">${escapeHTML(t(all.length ? "limits.chart.onlyUnknown" : "limits.chart.empty"))}</div>`) + toggle;
+  $("[data-limits-unknown]", container)?.addEventListener("click", () => {
+    state.limitsShowUnknown = !state.limitsShowUnknown;
+    renderLimitsChart(data, payloads);
+  });
+  bindLimitKindSwitch(container, () => renderLimitsChart(data, payloads));
+  for (const group of groups) {
+    const section = $(`[data-limits-group="${group.key}"]`, container);
+    drawLimitChart($(".limits-chart-body", section), $(".limits-legend", section), group.series, since, until, payloads, () => renderLimitsChart(data, payloads));
+  }
+}
+
+function drawLimitChart(body, legend, series, since, until, payloads, redraw) {
+  const plot = { top: 10, bottom: 190 };
+  const height = 200;
+  const x = (time) => (time - since) / Math.max(1, until - since) * 1000;
+  const y = (percent) => plot.bottom - (plot.bottom - plot.top) * limitPercentValue(percent) / 100;
+  const hidden = state.limitsHiddenSeries;
+  const visible = series.filter((item) => !hidden.has(limitSeriesId(item)));
+  // Within one chart the window length is fixed, so a shade of the tool's
+  // color and a dash tell its accounts apart.
+  const accounts = [...new Set(series.map((item) => `${item.provider}|${item.account}`))];
+  const accountIndex = (item) => Math.max(0, accounts.filter((id) => id.startsWith(`${item.provider}|`)).indexOf(`${item.provider}|${item.account}`));
+  const dashFor = (item) => ["", "6 4", "2 4", "10 3 2 3"][accountIndex(item) % 4];
+  const toneFor = (item) => `${item.provider}${["", " shade-1", " shade-2"][accountIndex(item) % 3]}`;
+  const paths = visible.map((item) => limitSegments(item, until).map((segment) => {
+    let d = "";
+    segment.points.forEach((point, index) => {
+      const px = x(Math.max(since, new Date(point.t).getTime())).toFixed(2);
+      const py = y(point.percent).toFixed(2);
+      d += index ? ` H ${px} V ${py}` : `M ${px} ${py}`;
+    });
+    d += ` H ${x(segment.end).toFixed(2)}`;
+    const dash = dashFor(item);
+    return `<path class="limits-line ${toneFor(item)}" d="${d}"${dash ? ` stroke-dasharray="${dash}"` : ""}></path>`;
+  }).join("")).join("");
+  const grid = [0, 25, 50, 75, 100].map((percent) => `<line class="limits-grid" x1="0" x2="1000" y1="${y(percent)}" y2="${y(percent)}"></line>`).join("");
+  const yLabels = [0, 50, 100].map((percent) => `<span style="top:${y(percent)}px">${escapeHTML(limitPercent(percent))}</span>`).join("");
+  const span = until - since;
+  const ticks = Array.from({ length: 5 }, (_, index) => since + span * index / 4);
+  const tickText = (time) => span <= 36 * 3600_000
+    ? i18n.formatDateTime(new Date(time), { timeZone: measurementTimezone, hour: "2-digit", minute: "2-digit" })
+    : i18n.formatDate(new Date(time), { timeZone: measurementTimezone, month: "short", day: "numeric" });
+  body.innerHTML = `<div class="limits-chart-frame">
+      <div class="limits-y-axis" aria-hidden="true">${yLabels}</div>
+      <div class="limits-plot" tabindex="0" role="img" aria-label="${escapeHTML(t("limits.chart.aria", { count: i18n.formatNumber(visible.length) }))}">
+        <svg viewBox="0 0 1000 ${height}" preserveAspectRatio="none" aria-hidden="true">${grid}${paths}<line class="limits-guide" x1="0" x2="0" y1="${plot.top}" y2="${plot.bottom}" visibility="hidden"></line></svg>
+        <div class="limits-tooltip" hidden></div>
+      </div>
+    </div>
+    <div class="limits-x-axis" aria-hidden="true">${ticks.map((time, index) => `<time class="${index === 0 ? "edge-start" : index === ticks.length - 1 ? "edge-end" : ""}" style="--label-x:${(index * 25).toFixed(2)}%">${escapeHTML(tickText(time))}</time>`).join("")}</div>`;
+  legend.innerHTML = series.map((item) => {
+    const id = limitSeriesId(item);
+    const name = limitSeriesName(item, payloads);
+    const dash = dashFor(item);
+    const off = hidden.has(id);
+    return `<button class="limits-legend-item pressable${off ? " off" : ""}" type="button" data-limits-series="${escapeHTML(id)}" aria-pressed="${!off}" title="${escapeHTML(t("limits.legend.toggle", { name }))}"><svg viewBox="0 0 24 8" aria-hidden="true"><line class="limits-line ${toneFor(item)}" x1="1" x2="23" y1="4" y2="4"${dash ? ` stroke-dasharray="${dash}"` : ""}></line></svg><span>${escapeHTML(name)}</span></button>`;
+  }).join("");
+  $$("[data-limits-series]", legend).forEach((button) => button.addEventListener("click", () => {
+    const id = button.dataset.limitsSeries;
+    if (hidden.has(id)) hidden.delete(id); else hidden.add(id);
+    redraw();
+  }));
+  const plotNode = $(".limits-plot", body);
+  const guide = $(".limits-guide", body);
+  const tooltip = $(".limits-tooltip", body);
+  let cursor = until;
+  const show = (time) => {
+    cursor = Math.min(until, Math.max(since, time));
+    const rows = visible.map((item) => ({ item, found: limitValueAt(item, cursor, until) })).filter((row) => row.found)
+      .sort((a, b) => b.found.point.percent - a.found.point.percent);
+    const position = x(cursor) / 10;
+    guide.setAttribute("x1", x(cursor).toFixed(2));
+    guide.setAttribute("x2", x(cursor).toFixed(2));
+    guide.setAttribute("visibility", "visible");
+    tooltip.hidden = false;
+    tooltip.classList.toggle("flip", position > 60);
+    tooltip.style.left = `${position}%`;
+    tooltip.innerHTML = `<strong>${escapeHTML(limitTime(new Date(cursor).toISOString()))}</strong>${rows.length ? rows.slice(0, 8).map(({ item, found }) => `<div class="limits-tooltip-row"><i class="limits-swatch ${toneFor(item)}" aria-hidden="true"></i><span>${escapeHTML(limitSeriesName(item, payloads))}</span><b>${escapeHTML(limitPercent(found.point.percent))}</b><small>${escapeHTML(t("limits.resetsAt", { time: limitTime(found.resets) }))}</small></div>`).join("") : `<div class="limits-tooltip-empty">${escapeHTML(t("limits.chart.noValue"))}</div>`}`;
+  };
+  const hide = () => { guide.setAttribute("visibility", "hidden"); tooltip.hidden = true; };
+  plotNode.addEventListener("pointermove", (event) => {
+    const rect = plotNode.getBoundingClientRect();
+    if (rect.width) show(since + (event.clientX - rect.left) / rect.width * (until - since));
+  });
+  plotNode.addEventListener("pointerleave", hide);
+  plotNode.addEventListener("blur", hide);
+  plotNode.addEventListener("focus", () => show(cursor));
+  plotNode.addEventListener("keydown", (event) => {
+    const step = (until - since) / 48;
+    const next = { ArrowLeft: cursor - step, ArrowRight: cursor + step, Home: since, End: until }[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    show(next);
+  });
+}
+
+// Under the chart, each tool's current limits for signed-in accounts.
+function renderLimitsSummary(payloads) {
+  $("#limitsSummary").innerHTML = LIMIT_PROVIDERS.map((provider) => {
+    const payload = payloads[provider];
+    if (!payload) return "";
+    const name = payload.status?.state || "idle";
+    const rows = (payload.current || []).filter((window) => !String(window.account).startsWith("history:"))
+      .sort((a, b) => String(a.account).localeCompare(String(b.account)) || limitOrder(provider, a) - limitOrder(provider, b));
+    let body;
+    if (provider === "claude" && !payload.claude_enabled) body = `<p class="limits-summary-note">${escapeHTML(t("limits.empty.claudeDisabled"))}</p>`;
+    else if (provider === "antigravity" && name === "closed" && !rows.length) body = `<p class="limits-summary-note">${escapeHTML(t("limits.empty.antigravityClosed"))}</p>`;
+    else if (!rows.length) body = `<p class="limits-summary-note">${escapeHTML(limitsEmptyText(payload, "current"))}</p>`;
+    else {
+      // Per account, one row per model group with its 5-hour and weekly limits side by side.
+      const accounts = new Map();
+      for (const window of rows) {
+        if (!accounts.has(window.account)) accounts.set(window.account, []);
+        accounts.get(window.account).push(window);
+      }
+      body = [...accounts].map(([id, windows]) => {
+        const plan = limitAccountPlan(payload, id, windows[0]);
+        const label = limitAccountLabel(payload, id);
+        return `<div class="limits-summary-account">
+            <div class="limits-summary-who"><span title="${escapeHTML(label)}">${escapeHTML(label)}</span>${plan ? `<b class="limits-plan">${escapeHTML(plan)}</b>` : ""}</div>
+            <div class="limits-summary-cards">${limitModelRows(provider, windows).map((row) => limitModelCard(payload, row, { compact: true })).join("")}</div>
+          </div>`;
+      }).join("");
+    }
+    return `<section class="limits-summary-tool">
+        <h3><i class="limits-swatch ${provider}" aria-hidden="true"></i><button class="text-button pressable" type="button" data-limits-open="${provider}">${escapeHTML(LIMIT_PROVIDER_NAMES[provider])}</button><span class="limits-summary-state">${escapeHTML(LIMIT_STATES.includes(name) ? t(`limits.state.${name}`) : name)}</span></h3>
+        ${body}
+      </section>`;
+  }).join("");
+  $$("[data-limits-open]", $("#limitsSummary")).forEach((button) => button.addEventListener("click", () => switchProvider(button.dataset.limitsOpen)));
+}
+
+// A chosen range uses the dashboard's custom-range form; it starts from the
+// range on screen.
+function openLimitsRange() {
+  if (!state.limitsCustom) {
+    const now = new Date();
+    const days = Number(state.limitsDays) || 7;
+    state.limitsCustom = { since: measuredMinute(new Date(now.getTime() - days * 24 * 3600_000)), until: measuredMinute(now) };
+  }
+  $("#limitsRangeStart").value = state.limitsCustom.since;
+  $("#limitsRangeEnd").value = state.limitsCustom.until;
+  $("#limitsRangeHint").textContent = t("range.hint", { zone: measurementTimezone });
+  $("#limitsRangeError").hidden = true;
+  $("#limitsRangeForm").hidden = false;
+  $("#limitsRangeStart").focus();
+}
+
+async function loadLimitsOverview({ preserve = false } = {}) {
+  const serial = ++state.requestSerial.limits;
+  if (!preserve) {
+    const loading = `<div class="empty-state">${escapeHTML(t("common.loading"))}</div>`;
+    $("#limitsChart").innerHTML = loading;
+    $("#limitsSummary").innerHTML = loading;
+  }
+  try {
+    const [data, ...list] = await Promise.all([
+      api(state.limitsDays === "custom" && state.limitsCustom
+        ? `/api/v1/limits/series?since=${encodeURIComponent(state.limitsCustom.since)}&until=${encodeURIComponent(state.limitsCustom.until)}`
+        : `/api/v1/limits/series?days=${state.limitsDays}`),
+      ...LIMIT_PROVIDERS.map((provider) => api(`/api/v1/limits?provider=${provider}`))
+    ]);
+    if (serial !== state.requestSerial.limits) return;
+    const payloads = Object.fromEntries(LIMIT_PROVIDERS.map((provider, index) => [provider, list[index]]));
+    state.limitsOverview = { data, payloads };
+    renderLimitsChart(data, payloads);
+    renderLimitsSummary(payloads);
+  } catch (error) {
+    if (serial !== state.requestSerial.limits || preserve) return;
+    $("#limitsChart").innerHTML = `<div class="empty-state">${escapeHTML(t("limits.loadError", { error: error.message }))}</div>`;
+    toast(t("limits.loadError", { error: error.message }), true);
+  } finally {
+    if (serial === state.requestSerial.limits) scheduleLimitsRefresh();
+  }
+}
+
+async function loadLimits({ preserve = false } = {}) {
+  clearTimeout(limitsRefreshTimer);
+  const provider = state.provider;
+  const overview = provider === "all";
+  $("#limitsOverview").hidden = !overview;
+  $("#limitsSourcePane").hidden = overview;
+  $("#limitsRange").hidden = !overview;
+  $(".limits-account").hidden = overview;
+  if (overview) return loadLimitsOverview({ preserve });
+  const serial = ++state.requestSerial.limits;
+  renderLimitsNote(provider);
+  const keepVisible = preserve && state.limits?.provider === provider;
+  if (!keepVisible) {
+    const loading = `<div class="empty-state">${escapeHTML(t("common.loading"))}</div>`;
+    $("#limitsStatus").innerHTML = loading;
+    $("#limitsCurrent").innerHTML = loading;
+    $("#limitsHistory").innerHTML = loading;
+    $("#limitsCurrentMeta").textContent = "";
+    $("#limitsHistoryMeta").textContent = "";
+  }
+  try {
+    const payload = await api(`/api/v1/limits?provider=${encodeURIComponent(provider)}`);
+    if (serial !== state.requestSerial.limits) return;
+    state.limits = payload;
+    renderLimits();
+  } catch (error) {
+    if (serial !== state.requestSerial.limits) return;
+    // Background refreshes keep the last reading on screen and stay quiet, like status polling.
+    if (!keepVisible) {
+      const message = `<div class="empty-state">${escapeHTML(t("limits.loadError", { error: error.message }))}</div>`;
+      $("#limitsStatus").innerHTML = message;
+      $("#limitsCurrent").innerHTML = "";
+      $("#limitsHistory").innerHTML = "";
+      toast(t("limits.loadError", { error: error.message }), true);
+    }
+  } finally {
+    if (serial === state.requestSerial.limits) scheduleLimitsRefresh();
+  }
+}
+
+async function setClaudeLimits(enabled, button) {
+  button.disabled = true;
+  try {
+    const result = await api("/api/v1/limits/claude", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled })
+    });
+    toast(t(result?.claude_enabled ? "limits.claude.enabledToast" : "limits.claude.disabledToast"));
+    await loadLimits({ preserve: true });
+    // The first reading arrives shortly after enabling, so look again sooner than a minute.
+    if (result?.claude_enabled) scheduleLimitsRefresh(5000);
+  } catch (error) {
+    button.disabled = false;
+    toast(t("limits.claude.toggleError", { error: error.message }), true);
+  }
+}
+
 async function loadCurrentView(options = {}) {
   if (state.view === "daily") return loadDaily(options);
   if (state.view === "details") return loadDetails(options);
+  if (state.view === "limits") return loadLimits(options);
   return loadOverview(options);
 }
 
@@ -1538,6 +2337,9 @@ function switchView(next) {
   const nextPanel = $(`[data-view-panel="${next}"]`);
   const preserve = Boolean(state.viewVisited[next]);
   state.view = next;
+  document.documentElement.dataset.view = next;
+  if (next !== "limits") clearTimeout(limitsRefreshTimer);
+  renderProviderTabs();
   $$('.nav-tab').forEach((tab) => {
     const selected = tab.dataset.view === next;
     tab.classList.toggle("active", selected);
@@ -1593,8 +2395,8 @@ function setExportLinks() {
   const bounds = currentBounds();
   const csvPath = apiURL("/api/v1/export", { ...bounds, format: "csv" });
   const jsonPath = apiURL("/api/v1/export", { ...bounds, format: "json" });
-  $("#exportCsv").href = window.CodexUsageDemo?.createExportURL?.("csv", csvPath) || csvPath;
-  $("#exportJson").href = window.CodexUsageDemo?.createExportURL?.("json", jsonPath) || jsonPath;
+  $("#exportCsv").href = window.TokenUsageDemo?.createExportURL?.("csv", csvPath) || csvPath;
+  $("#exportJson").href = window.TokenUsageDemo?.createExportURL?.("json", jsonPath) || jsonPath;
 }
 
 async function openPricingDialog() {
@@ -1895,7 +2697,9 @@ function switchProvider(next) {
   resetDataSelections();
   syncFilterForm();
   renderFilterChips();
-  state.viewVisited = { overview: false, daily: false, details: false, [state.view]: true };
+  state.limitsAccount = null;
+  state.limitsHistoryLimit = {};
+  state.viewVisited = { overview: false, daily: false, details: false, limits: false, [state.view]: true };
   loadCurrentView();
 }
 
@@ -1910,6 +2714,45 @@ function setupEvents() {
   $$('.nav-tab').forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
   $(".primary-nav").addEventListener("keydown", (event) => tablistKeydown(event, $$('.nav-tab'), (button) => switchView(button.dataset.view)));
   $("#brandButton").addEventListener("click", () => switchView("overview"));
+  $$("[data-limits-days]").forEach((button) => button.addEventListener("click", () => {
+    const value = button.dataset.limitsDays;
+    $$("[data-limits-days]").forEach((item) => item.classList.toggle("selected", item === button));
+    if (value === "custom") return openLimitsRange();
+    state.limitsDays = Number(value);
+    $("#limitsRangeForm").hidden = true;
+    loadLimits();
+  }));
+  $("#limitsRangeNow").addEventListener("click", () => { $("#limitsRangeEnd").value = measuredMinute(new Date()); });
+  $("#limitsRangeForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!$("#limitsRangeForm").reportValidity()) return;
+    const since = $("#limitsRangeStart").value;
+    const until = $("#limitsRangeEnd").value;
+    const error = since >= until ? t("range.orderError") : "";
+    $("#limitsRangeError").textContent = error;
+    $("#limitsRangeError").hidden = !error;
+    if (error) return $("#limitsRangeEnd").focus();
+    state.limitsCustom = { since, until };
+    state.limitsDays = "custom";
+    loadLimits();
+  });
+  $("#limitsAccount").addEventListener("change", (event) => {
+    const value = event.target.value;
+    state.limitsAccount = value.startsWith("a:") ? value.slice(2) : null;
+    state.limitsHistoryLimit = {};
+    renderLimits();
+  });
+  $("#limitsHistory").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-limits-more]");
+    if (!button) return;
+    const kind = button.dataset.limitsMore;
+    state.limitsHistoryLimit[kind] = (state.limitsHistoryLimit[kind] || LIMITS_HISTORY_PAGE) + LIMITS_HISTORY_PAGE;
+    renderLimits();
+  });
+  $("#limitsStatus").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-claude-limits]");
+    if (button && !button.disabled) setClaudeLimits(button.dataset.claudeLimits === "on", button);
+  });
   $$('[data-trend-view]').forEach((button) => button.addEventListener("click", () => switchTrendView(button.dataset.trendView)));
   $("#usageTrendPanel").querySelector('[role="tablist"]').addEventListener("keydown", (event) => tablistKeydown(event, $$('[data-trend-view]'), (button) => switchTrendView(button.dataset.trendView)));
   $("#previousHourDay").addEventListener("click", () => navigateHourlyDate(dateKey(addDays(state.hourlyDate, -1)), -1));
@@ -2087,7 +2930,7 @@ function setupEvents() {
   $("#localeButton").addEventListener("click", () => {
     i18n.setLocale(i18n.getLocale() === "en" ? "zh-TW" : "en");
   });
-  window.addEventListener("codex-usage-locale-change", async () => {
+  window.addEventListener("token-usage-locale-change", async () => {
     syncSettingsForm();
     renderFilterOptions();
     renderFilterChips();
@@ -2123,6 +2966,10 @@ async function pollStatus() {
 function startStatusPolling() {
   document.addEventListener("visibilitychange", () => {
     scheduleStatusPoll(document.visibilityState === "visible" ? 0 : HIDDEN_STATUS_POLL_MS);
+    // Limits refresh only while the page is visible and catch up on return.
+    if (state.view !== "limits") return;
+    if (document.visibilityState === "visible") loadLimits({ preserve: true });
+    else clearTimeout(limitsRefreshTimer);
   });
   scheduleStatusPoll();
 }
@@ -2132,11 +2979,11 @@ async function boot() {
   i18n.applyStatic();
   state.provider = initialProvider();
   renderProviderTabs();
-  if (window.CODEX_USAGE_DEMO || window.CodexUsageDemo) $("#demoBanner").classList.remove("hidden");
+  if (window.TOKEN_USAGE_DEMO || window.TokenUsageDemo) $("#demoBanner").classList.remove("hidden");
   setupEvents();
   renderFilterChips();
   const requestedView = location.hash.slice(1);
-  if (["daily", "details"].includes(requestedView)) {
+  if (["daily", "details", "limits"].includes(requestedView)) {
     const initial = state.view;
     state.view = requestedView;
     state.viewVisited[requestedView] = true;
@@ -2149,6 +2996,8 @@ async function boot() {
       tab.tabIndex = selected ? 0 : -1;
     });
   }
+  document.documentElement.dataset.view = state.view;
+  renderProviderTabs();
   await loadStatus().catch((error) => toast(error.message, true));
   await loadCurrentView();
   startStatusPolling();

@@ -23,6 +23,7 @@ import (
 	"tokenusage/internal/cliui"
 	"tokenusage/internal/config"
 	"tokenusage/internal/ledger"
+	"tokenusage/internal/limits"
 	"tokenusage/internal/model"
 	"tokenusage/internal/platform"
 	"tokenusage/internal/pricing"
@@ -32,7 +33,7 @@ import (
 )
 
 var (
-	Version   = "1.0.4"
+	Version   = "1.1.0"
 	Commit    = "dev"
 	BuildDate = "unknown"
 )
@@ -58,7 +59,7 @@ func (c CLI) Run(args []string) int {
 		fmt.Fprintln(c.Stderr, cliui.English.Text("error.prefix"), languageErr)
 		return 2
 	}
-	locale, languageErr := cliui.Detect(explicitLanguage, os.Getenv("CODEX_USAGE_LANG"), platform.UserLocale())
+	locale, languageErr := cliui.Detect(explicitLanguage, os.Getenv("TOKEN_USAGE_LANG"), platform.UserLocale())
 	if languageErr != nil {
 		fmt.Fprintln(c.Stderr, cliui.English.Text("error.prefix"), languageErr)
 		return 2
@@ -71,7 +72,7 @@ func (c CLI) Run(args []string) int {
 			c.usage()
 			return 0
 		case "-v", "--version":
-			fmt.Fprintf(c.Stdout, "codex-usage %s (%s, %s) %s/%s\n", Version, Commit, BuildDate, runtime.GOOS, runtime.GOARCH)
+			fmt.Fprintf(c.Stdout, "token-usage %s (%s, %s) %s/%s\n", Version, Commit, BuildDate, runtime.GOOS, runtime.GOARCH)
 			return 0
 		}
 	}
@@ -103,7 +104,7 @@ func (c CLI) Run(args []string) int {
 	case "config":
 		err = c.config(args)
 	case "version", "--version", "-v":
-		fmt.Fprintf(c.Stdout, "codex-usage %s (%s, %s) %s/%s\n", Version, Commit, BuildDate, runtime.GOOS, runtime.GOARCH)
+		fmt.Fprintf(c.Stdout, "token-usage %s (%s, %s) %s/%s\n", Version, Commit, BuildDate, runtime.GOOS, runtime.GOARCH)
 		return 0
 	case "help", "--help", "-h":
 		c.usage()
@@ -160,6 +161,7 @@ type runtimeState struct {
 	store   *store.Store
 	scanner *usage.Scanner
 	server  *usageServer.Server
+	limits  *limits.Manager
 }
 
 func openState() (*runtimeState, error) {
@@ -185,7 +187,7 @@ func openState() (*runtimeState, error) {
 	}
 	if err := platform.LockDown(paths.StateDir); err != nil {
 		st.Close()
-		return nil, fmt.Errorf("限縮狀態目錄權限: %w", err)
+		return nil, fmt.Errorf("限縮服務資料夾權限: %w", err)
 	}
 	scanner := &usage.Scanner{Store: st}
 	srv := &usageServer.Server{
@@ -214,22 +216,30 @@ func openState() (*runtimeState, error) {
 		},
 		Address: cfg.ListenAddress, Port: cfg.Port, Version: Version,
 	}
-	ledgers, err := openLedgers()
+	ledgers, err := openLedgers(paths)
 	if err != nil {
 		st.Close()
 		return nil, err
 	}
 	srv.Ledgers = ledgers
+	manager, err := openLimits(paths, srv)
+	if err != nil {
+		st.Close()
+		for _, p := range ledgers {
+			_ = p.Close()
+		}
+		return nil, err
+	}
 	return &runtimeState{
 		paths: paths, cfg: cfg, homes: homes, store: st,
-		scanner: scanner, server: srv,
+		scanner: scanner, server: srv, limits: manager,
 	}, nil
 }
 
-// openLedgers opens the Claude Code and Antigravity ledgers: beside the
-// program in a portable copy, otherwise under the per-user data directory.
-func openLedgers() ([]*ledger.Provider, error) {
-	claudeDir, agDir := ledgerDirs()
+// openLedgers opens the Claude Code and Antigravity ledgers in their
+// subfolders of the service folder.
+func openLedgers(paths config.Paths) ([]*ledger.Provider, error) {
+	claudeDir, agDir := ledgerDirs(paths)
 	claude, err := ledger.OpenClaude(claudeDir, nil)
 	if err != nil {
 		return nil, fmt.Errorf("open Claude Code ledger: %w", err)
@@ -248,28 +258,52 @@ func openLedgers() ([]*ledger.Provider, error) {
 	return providers, nil
 }
 
+// openLimits opens the 5-hour and weekly window records and their collectors.
+func openLimits(paths config.Paths, srv *usageServer.Server) (*limits.Manager, error) {
+	st, err := limits.Open(limitsDir(paths))
+	if err != nil {
+		return nil, fmt.Errorf("open limits: %w", err)
+	}
+	claudeEnabled := func() bool {
+		current, loadErr := config.Load(paths)
+		return loadErr == nil && current.ClaudeUsageAPI
+	}
+	manager := &limits.Manager{
+		Store:         st,
+		Codex:         &limits.CodexCollector{Store: st, Homes: srv.Homes},
+		Claude:        &limits.ClaudeCollector{Store: st},
+		Antigravity:   &limits.AntigravityCollector{Store: st, GeminiHome: os.Getenv("ANTIGRAVITY_TRACKER_HOME")},
+		ClaudeEnabled: claudeEnabled,
+	}
+	srv.Limits = manager
+	srv.ClaudeUsageAPI = claudeEnabled
+	srv.SetClaudeUsageAPI = func(enabled bool) error {
+		current, loadErr := config.Load(paths)
+		if loadErr != nil {
+			return loadErr
+		}
+		current.ClaudeUsageAPI = enabled
+		return config.Save(paths, current)
+	}
+	return manager, nil
+}
+
+// limitsDir is where the window records live: beside the other ledgers.
+func limitsDir(paths config.Paths) string {
+	if dir := os.Getenv("LIMITS_TRACKER_DATA"); dir != "" {
+		return dir
+	}
+	return paths.LedgerDir("limits")
+}
+
 // ledgerDirs returns the Claude Code and Antigravity ledger folders.
-func ledgerDirs() (claudeDir, agDir string) {
+func ledgerDirs(paths config.Paths) (claudeDir, agDir string) {
 	claudeDir, agDir = os.Getenv("CLAUDE_TRACKER_DATA"), os.Getenv("ANTIGRAVITY_TRACKER_DATA")
-	if data, ok := config.PortableDataDir(); ok {
-		if claudeDir == "" {
-			claudeDir = filepath.Join(data, "claude")
-		}
-		if agDir == "" {
-			agDir = filepath.Join(data, "antigravity")
-		}
-	}
-	local := os.Getenv("LOCALAPPDATA")
-	if local == "" {
-		if dir, err := os.UserCacheDir(); err == nil {
-			local = dir
-		}
-	}
 	if claudeDir == "" {
-		claudeDir = filepath.Join(local, "ClaudeUsage")
+		claudeDir = paths.LedgerDir("claude")
 	}
 	if agDir == "" {
-		agDir = filepath.Join(local, "AntigravityUsage")
+		agDir = paths.LedgerDir("antigravity")
 	}
 	return claudeDir, agDir
 }
@@ -277,6 +311,9 @@ func ledgerDirs() (claudeDir, agDir string) {
 func (s *runtimeState) closeLedgers() {
 	for _, p := range s.server.Ledgers {
 		_ = p.Close()
+	}
+	if s.limits != nil {
+		_ = s.limits.Store.Close()
 	}
 }
 
@@ -334,6 +371,7 @@ func (c CLI) serve(args []string, daemon bool) error {
 	defer cancel()
 	defer state.closeLedgers()
 	go backgroundLedgerScan(ctx, state.server)
+	go state.limits.Run(ctx)
 	updates := newUpdater(state.paths)
 	state.server.Updates = updates
 	go updates.Run(ctx)
@@ -589,7 +627,7 @@ func (c CLI) summary(args []string) error {
 
 func (c CLI) config(args []string) error {
 	if len(args) < 1 {
-		return errors.New("用法: codex-usage config add-home PATH")
+		return errors.New("用法: token-usage config add-home PATH")
 	}
 	paths, err := config.ResolvePaths()
 	if err != nil {
@@ -598,14 +636,14 @@ func (c CLI) config(args []string) error {
 	switch args[0] {
 	case "add-home":
 		if len(args) != 2 {
-			return errors.New("用法: codex-usage config add-home PATH")
+			return errors.New("用法: token-usage config add-home PATH")
 		}
 		added, err := config.AddHome(paths, args[1])
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(c.Stdout, "已新增額外 Codex Home:", added)
-		fmt.Fprintln(c.Stdout, "執行 codex-usage scan 開始統計。")
+		fmt.Fprintln(c.Stdout, c.tr("config.homeAdded"), added)
+		fmt.Fprintln(c.Stdout, c.tr("config.scanHint"))
 		return nil
 	default:
 		return fmt.Errorf("未知 config 子命令 %q", args[0])
@@ -632,34 +670,6 @@ func (c CLI) install(args []string) error {
 	if _, statErr := os.Stat(destination); statErr == nil {
 		if err := platform.UninstallService(destination, paths.StateDir); err != nil {
 			return fmt.Errorf(c.tr("install.stopCurrent"), err)
-		}
-	}
-	previous, err := config.ResolvePreviousPaths()
-	if err != nil {
-		return err
-	}
-	previousService := platform.PreviousService{
-		StateDir: previous.StateDir, Executable: previous.InstalledEXE, InstallDir: previous.InstallDir,
-		PIDPath: previous.PIDPath, LauncherPath: previous.LauncherPath,
-		StartupEntry: previous.StartupEntry, ServiceName: previous.ServiceName,
-	}
-	_, previousStateErr := os.Stat(previous.StateDir)
-	_, previousExecutableErr := os.Stat(previous.InstalledEXE)
-	previousInstalled := previousStateErr == nil || previousExecutableErr == nil
-	if err := platform.StopPreviousService(previousService); err != nil {
-		return fmt.Errorf(c.tr("install.stopOld"), err)
-	}
-	migration, err := config.MigratePreviousState(paths, previous)
-	if err != nil {
-		return fmt.Errorf(c.tr("install.migrateOld"), err)
-	}
-	if migration.DatabaseConflict {
-		return errors.New(c.tr("install.dbConflict"))
-	}
-	if migration.Found {
-		fmt.Fprintln(c.Stdout, c.tr("install.migrated"))
-		if previousInstalled && !migration.PreviousStateGone {
-			fmt.Fprintln(c.Stderr, c.tr("install.oldState"), previous.StateDir)
 		}
 	}
 	cfg, err := config.Load(paths)
@@ -706,19 +716,6 @@ func (c CLI) install(args []string) error {
 	}
 	state.store.Close()
 
-	homes, err := config.CodexHomes(cfg)
-	if err != nil {
-		return err
-	}
-	for _, home := range homes {
-		changed, removeErr := config.RemoveLegacyManagedOTel(home)
-		if removeErr != nil {
-			return fmt.Errorf("%s: %w", home, removeErr)
-		}
-		if changed {
-			fmt.Fprintln(c.Stdout, c.tr("install.legacyRemoved", home))
-		}
-	}
 	serviceResult, err := platform.InstallService(destination, paths.StateDir)
 	if err != nil {
 		return err
@@ -737,11 +734,6 @@ func (c CLI) install(args []string) error {
 	}
 	if serviceResult.Warning != "" {
 		fmt.Fprintln(c.Stderr, c.tr("install.warning"), serviceResult.Warning)
-	}
-	if previousInstalled {
-		if cleanupErr := platform.RemovePreviousExecutable(previousService); cleanupErr != nil {
-			fmt.Fprintln(c.Stderr, c.tr("install.cleanup"), cleanupErr)
-		}
 	}
 	fmt.Fprintf(c.Stdout, "Dashboard: http://127.0.0.1:%d\n", cfg.Port)
 	fmt.Fprintln(c.Stdout, c.tr("install.done"))
@@ -765,35 +757,21 @@ func (c CLI) uninstall(args []string) error {
 	if portable && *purge {
 		return errors.New("可攜模式不支援 --purge；如要刪除資料，請先執行 uninstall，再自行刪除 data 資料夾")
 	}
-	cfg, loadErr := config.Load(paths)
-	if loadErr != nil {
-		cfg = config.Default()
-	}
-	homes, _ := config.CodexHomes(cfg)
 	if err := platform.UninstallService(paths.InstalledEXE, paths.StateDir); err != nil {
 		return err
 	}
-	for _, home := range homes {
-		changed, removeErr := config.RemoveLegacyManagedOTel(home)
-		if removeErr != nil {
-			return fmt.Errorf("移除 %s managed stanza: %w", home, removeErr)
-		}
-		if changed {
-			fmt.Fprintln(c.Stdout, "已移除舊版工具管理的 OTel 設定:", home)
-		}
-	}
 	if portable {
-		fmt.Fprintln(c.Stdout, "已停止服務並移除登入啟動；程式與 data 資料夾保留在:", paths.InstallDir)
+		fmt.Fprintln(c.Stdout, c.tr("uninstall.portable"), paths.InstallDir)
 		return nil
 	}
 	if err := platform.RemoveInstalledExecutable(paths.InstalledEXE, paths.StateDir, *purge); err != nil {
 		return err
 	}
 	if *purge {
-		fmt.Fprintln(c.Stdout, "已解除安裝服務、工具和統計資料（不可從工具內恢復）。")
+		fmt.Fprintln(c.Stdout, c.tr("uninstall.purged"))
 	} else {
-		fmt.Fprintln(c.Stdout, "已解除安裝服務和工具；統計資料庫保留在:", paths.Database)
-		fmt.Fprintln(c.Stdout, "如需刪除資料，請明確執行 codex-usage uninstall --purge。")
+		fmt.Fprintln(c.Stdout, c.tr("uninstall.kept"), paths.StateDir)
+		fmt.Fprintln(c.Stdout, c.tr("uninstall.purgeHint"))
 	}
 	return nil
 }
@@ -893,14 +871,6 @@ func (c CLI) doctor(args []string) error {
 			}
 			sessionHomes[session.SessionID] = home
 		}
-		legacyManaged, legacyErr := config.HasLegacyManagedOTel(home)
-		if legacyErr != nil {
-			add("warn", "codex_config", legacyErr.Error())
-		} else if legacyManaged {
-			add("warn", "codex_config", c.tr("doctor.legacyManaged", home))
-		} else {
-			add("ok", "codex_config", c.tr("doctor.configUntouched", home))
-		}
 		if runtime.GOOS == "linux" && strings.Contains(filepath.ToSlash(home), "/mnt/") {
 			add("warn", "shared_home", c.tr("doctor.sharedHome", home))
 		}
@@ -932,7 +902,7 @@ func copyExecutable(source, destination string) error {
 	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(filepath.Dir(destination), ".codex-usage-*")
+	temp, err := os.CreateTemp(filepath.Dir(destination), ".token-usage-*")
 	if err != nil {
 		return err
 	}

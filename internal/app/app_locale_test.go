@@ -14,7 +14,7 @@ func runCLIForLocaleTest(t *testing.T, args ...string) (int, string, string) {
 }
 
 func TestGlobalLanguageFlagSelectsEnglishHelp(t *testing.T) {
-	t.Setenv("CODEX_USAGE_LANG", "zh-CN")
+	t.Setenv("TOKEN_USAGE_LANG", "zh-CN")
 	code, stdout, stderr := runCLIForLocaleTest(t, "--lang", "en", "--help")
 	if code != 0 || stderr != "" {
 		t.Fatalf("code=%d stderr=%q", code, stderr)
@@ -25,7 +25,7 @@ func TestGlobalLanguageFlagSelectsEnglishHelp(t *testing.T) {
 }
 
 func TestLanguageEnvironmentAndFlagPrecedence(t *testing.T) {
-	t.Setenv("CODEX_USAGE_LANG", "en")
+	t.Setenv("TOKEN_USAGE_LANG", "en")
 	code, stdout, _ := runCLIForLocaleTest(t, "--help")
 	if code != 0 || !strings.Contains(stdout, "Usage:") {
 		t.Fatalf("environment did not select English: code=%d output=%q", code, stdout)

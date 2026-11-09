@@ -15,9 +15,9 @@ import (
 )
 
 func BenchmarkEventExportTraversal(b *testing.B) {
-	path := os.Getenv("CODEX_USAGE_BENCH_DB")
+	path := os.Getenv("TOKEN_USAGE_BENCH_DB")
 	if path == "" {
-		b.Skip("set CODEX_USAGE_BENCH_DB to a disposable database copy")
+		b.Skip("set TOKEN_USAGE_BENCH_DB to a disposable database copy")
 	}
 	st, err := Open(path)
 	if err != nil {
@@ -59,9 +59,9 @@ func BenchmarkEventExportTraversal(b *testing.B) {
 }
 
 func BenchmarkPricingEventTraversal(b *testing.B) {
-	path := os.Getenv("CODEX_USAGE_BENCH_DB")
+	path := os.Getenv("TOKEN_USAGE_BENCH_DB")
 	if path == "" {
-		b.Skip("set CODEX_USAGE_BENCH_DB to a disposable database copy")
+		b.Skip("set TOKEN_USAGE_BENCH_DB to a disposable database copy")
 	}
 	st, err := Open(path)
 	if err != nil {
@@ -83,9 +83,9 @@ func BenchmarkPricingEventTraversal(b *testing.B) {
 }
 
 func BenchmarkPricingAggregateTraversal(b *testing.B) {
-	path := os.Getenv("CODEX_USAGE_BENCH_DB")
+	path := os.Getenv("TOKEN_USAGE_BENCH_DB")
 	if path == "" {
-		b.Skip("set CODEX_USAGE_BENCH_DB to a disposable database copy")
+		b.Skip("set TOKEN_USAGE_BENCH_DB to a disposable database copy")
 	}
 	st, err := Open(path)
 	if err != nil {
@@ -107,9 +107,9 @@ func BenchmarkPricingAggregateTraversal(b *testing.B) {
 }
 
 func BenchmarkDashboardQueries(b *testing.B) {
-	path := os.Getenv("CODEX_USAGE_BENCH_DB")
+	path := os.Getenv("TOKEN_USAGE_BENCH_DB")
 	if path == "" {
-		b.Skip("set CODEX_USAGE_BENCH_DB to a disposable database copy")
+		b.Skip("set TOKEN_USAGE_BENCH_DB to a disposable database copy")
 	}
 	st, err := Open(path)
 	if err != nil {
@@ -686,7 +686,7 @@ func TestCanonicalViewsUseOnlyJSONL(t *testing.T) {
 }
 
 func TestTimeseriesKeepsIngestionLocalDateAfterTimezoneChange(t *testing.T) {
-	t.Setenv("CODEX_USAGE_TIMEZONE", "Asia/Shanghai")
+	t.Setenv("TOKEN_USAGE_TIMEZONE", "Asia/Shanghai")
 	previousLocal := time.Local
 	time.Local = time.FixedZone("UTC+8", 8*60*60)
 	t.Cleanup(func() { time.Local = previousLocal })

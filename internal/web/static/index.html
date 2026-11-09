@@ -31,6 +31,7 @@
         <button id="tab-overview" class="nav-tab pressable active" type="button" role="tab" aria-selected="true" aria-controls="view-overview" tabindex="0" data-view="overview" data-i18n="nav.overview">概覽</button>
         <button id="tab-daily" class="nav-tab pressable" type="button" role="tab" aria-selected="false" aria-controls="view-daily" tabindex="-1" data-view="daily" data-i18n="nav.daily">每日</button>
         <button id="tab-details" class="nav-tab pressable" type="button" role="tab" aria-selected="false" aria-controls="view-details" tabindex="-1" data-view="details" data-i18n="nav.details">明細</button>
+        <button id="tab-limits" class="nav-tab pressable" type="button" role="tab" aria-selected="false" aria-controls="view-limits" tabindex="-1" data-view="limits" data-i18n="nav.limits">額度</button>
       </nav>
 
       <div class="top-actions">
@@ -312,6 +313,62 @@
         <div class="tree-pagination" id="treePagination" hidden><button type="button" class="pressable" id="treePrevious" data-i18n="tree.previous">上一頁</button><span id="treeCount"></span><button type="button" class="pressable" id="treeNext" data-i18n="tree.next">下一頁</button><small data-i18n="tree.scope">合計包含目前篩選範圍內的子任務</small></div>
         <div class="session-list" id="sessionRows"><div class="empty-state" data-i18n="details.sessionsLoading">正在載入本機 Session…</div></div>
       </section>
+    </section>
+
+    <section class="view-panel" id="view-limits" role="tabpanel" aria-labelledby="tab-limits" data-view-panel="limits" hidden>
+      <div class="view-heading limits-heading">
+        <div>
+          <h1 data-i18n="limits.title">用量額度</h1>
+          <p class="view-subtitle" data-i18n="limits.subtitle">各工具的 5 小時與每週額度用了多少、何時重置</p>
+        </div>
+        <div class="limits-tools">
+          <div class="segmented limits-range" id="limitsRange" role="group" aria-label="圖表時間範圍" data-i18n-aria-label="limits.chart.rangeAria"><button class="pressable" type="button" data-limits-days="1" data-i18n="limits.chart.day">1 天</button><button class="pressable selected" type="button" data-limits-days="7" data-i18n="limits.chart.week">7 天</button><button class="pressable" type="button" data-limits-days="30" data-i18n="limits.chart.month">30 天</button><button class="pressable" type="button" data-limits-days="custom" aria-controls="limitsRangeForm" data-i18n="range.custom">自訂</button></div>
+          <label class="limits-account" for="limitsAccount"><span data-i18n="limits.account">帳號</span><select id="limitsAccount"><option value="" data-i18n="limits.allAccounts">全部帳號</option></select></label>
+        </div>
+      </div>
+
+      <div class="limits-overview" id="limitsOverview" hidden>
+        <form class="custom-range surface" id="limitsRangeForm" aria-label="自訂時間範圍" data-i18n-aria-label="range.customAria" hidden>
+          <div class="custom-range-fields">
+            <label for="limitsRangeStart"><span data-i18n="range.start">開始時間</span><input id="limitsRangeStart" name="since" type="datetime-local" step="60" min="0001-01-01T00:00" max="9999-12-31T23:59" required aria-describedby="limitsRangeHint limitsRangeError"></label>
+            <span class="custom-range-arrow" aria-hidden="true">→</span>
+            <div class="custom-range-end">
+              <label for="limitsRangeEnd"><span data-i18n="range.end">結束時間</span><input id="limitsRangeEnd" name="until" type="datetime-local" step="60" min="0001-01-01T00:00" max="9999-12-31T23:59" required aria-describedby="limitsRangeHint limitsRangeError"></label>
+              <button class="action-button pressable" id="limitsRangeNow" type="button" data-i18n="range.now" data-i18n-title="range.nowHint" title="將結束時間設為目前分鐘">現在</button>
+            </div>
+            <button class="action-button primary pressable" type="submit" data-i18n="range.query">查詢用量</button>
+          </div>
+          <p class="custom-range-hint" id="limitsRangeHint"></p>
+          <p class="custom-range-error" id="limitsRangeError" role="alert" hidden></p>
+        </form>
+        <section class="surface limits-panel" aria-labelledby="limitsChartTitle">
+          <div class="section-head compact"><h2 id="limitsChartTitle" data-i18n="limits.chart.title">額度使用率</h2><span class="section-meta" id="limitsChartMeta"></span></div>
+          <div class="limits-chart" id="limitsChart"><div class="empty-state" data-i18n="common.loading">正在讀取…</div></div>
+        </section>
+        <section class="surface limits-panel" aria-labelledby="limitsSummaryTitle">
+          <div class="section-head compact"><h2 id="limitsSummaryTitle" data-i18n="limits.summaryTitle">目前狀況</h2></div>
+          <div class="limits-summary" id="limitsSummary"><div class="empty-state" data-i18n="common.loading">正在讀取…</div></div>
+        </section>
+      </div>
+
+      <div class="limits-source-pane" id="limitsSourcePane">
+      <section class="surface limits-status" id="limitsStatus" aria-live="polite"><div class="empty-state" data-i18n="common.loading">正在讀取…</div></section>
+
+      <section class="surface limits-panel" aria-labelledby="limitsCurrentTitle">
+        <div class="section-head compact"><h2 id="limitsCurrentTitle" data-i18n="limits.currentTitle">目前週期</h2><span class="section-meta" id="limitsCurrentMeta"></span></div>
+        <div class="limits-current" id="limitsCurrent"><div class="empty-state" data-i18n="common.loading">正在讀取…</div></div>
+      </section>
+
+      <section class="surface limits-panel" aria-labelledby="limitsHistoryTitle">
+        <div class="section-head compact"><h2 id="limitsHistoryTitle" data-i18n="limits.historyTitle">過去週期</h2><span class="section-meta" id="limitsHistoryMeta"></span></div>
+        <div class="limits-history" id="limitsHistory"><div class="empty-state" data-i18n="common.loading">正在讀取…</div></div>
+      </section>
+
+      <section class="surface quiet-section limits-note" aria-labelledby="limitsNoteTitle">
+        <div class="section-head compact"><h2 id="limitsNoteTitle" data-i18n="limits.noteTitle">資料從哪裡來</h2></div>
+        <div id="limitsNote"></div>
+      </section>
+      </div>
     </section>
 
     <footer><span data-i18n="footer.summary">本機 Session JSONL · API 等價成本並非帳單 · 僅監聽 127.0.0.1</span><div class="footer-updates"><span id="measurementTimezone"></span>

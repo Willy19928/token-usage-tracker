@@ -71,7 +71,7 @@ func New(stateDir, version, goos, arch string, apply func(string, string, string
 	m.setRelease()
 	return m
 }
-func (m *Manager) file() string { return filepath.Join(m.stateDir, ".codex-usage-updates.json") }
+func (m *Manager) file() string { return filepath.Join(m.stateDir, ".token-usage-updates.json") }
 func (m *Manager) setRelease() {
 	m.status.Latest = strings.TrimPrefix(m.release.Tag, "v")
 	m.status.Available = !m.release.Draft && !m.release.Prerelease && Newer(m.release.Tag, m.version)
@@ -117,7 +117,7 @@ func WriteJSON(path string, value any) error {
 func (m *Manager) save() error {
 	return WriteJSON(m.file(), saved{AutoCheck: m.status.AutoCheck, CheckedAt: m.status.CheckedAt, Release: m.release, DownloadDir: m.status.CustomDownloadDir, LastDownload: m.status.LastDownload})
 }
-func ResultPath(dir string) string { return filepath.Join(dir, ".codex-usage-update-result.json") }
+func ResultPath(dir string) string { return filepath.Join(dir, ".token-usage-update-result.json") }
 func WriteResult(dir string, r Result) error {
 	r.PID = os.Getpid()
 	r.Updated = time.Now().UTC()
@@ -237,7 +237,7 @@ func (m *Manager) prepare(ctx context.Context, r Release) error {
 	if err := ensureDownloadDirectory(downloadDir); err != nil {
 		return err
 	}
-	downloadRun, err := os.MkdirTemp(downloadDir, "codex-usage-"+r.Tag+"-")
+	downloadRun, err := os.MkdirTemp(downloadDir, "token-usage-"+r.Tag+"-")
 	if err != nil {
 		return err
 	}
@@ -254,7 +254,7 @@ func (m *Manager) prepare(ctx context.Context, r Release) error {
 	if err != nil {
 		return err
 	}
-	root := filepath.Join(m.stateDir, ".codex-usage-updates")
+	root := filepath.Join(m.stateDir, ".token-usage-updates")
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return err
 	}

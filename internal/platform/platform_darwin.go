@@ -38,8 +38,8 @@ func launchPlist(label, executable, stateDir string, args []string, keepAlive bo
 	for _, arg := range args {
 		b.WriteString(plistString(arg))
 	}
-	b.WriteString("</array><key>EnvironmentVariables</key><dict><key>CODEX_USAGE_HOME</key>" + plistString(stateDir))
-	for _, name := range []string{"CODEX_HOME", "CODEX_USAGE_TIMEZONE", "TZ"} {
+	b.WriteString("</array><key>EnvironmentVariables</key><dict><key>TOKEN_USAGE_HOME</key>" + plistString(stateDir))
+	for _, name := range []string{"CODEX_HOME", "TOKEN_USAGE_TIMEZONE", "TZ"} {
 		if value := os.Getenv(name); value != "" {
 			b.WriteString("<key>" + name + "</key>" + plistString(value))
 		}
@@ -95,7 +95,7 @@ func UninstallService(executable, stateDir string) error {
 	if err = os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	_ = os.Remove(filepath.Join(stateDir, "codex-usage.pid"))
+	_ = os.Remove(filepath.Join(stateDir, "token-usage.pid"))
 	return nil
 }
 func LockDown(path string) error  { return os.Chmod(path, 0700) }
@@ -111,23 +111,8 @@ func StartDetached(executable string, args ...string) error {
 	}
 	return command.Process.Release()
 }
-func StopPreviousService(previous PreviousService) error {
-	pid, err := readPIDFile(previous.PIDPath)
-	if err == nil {
-		if err = stopDarwinProcess(pid, previous.Executable); err != nil {
-			return err
-		}
-	}
-	if err = os.Remove(previous.PIDPath); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
-func RemovePreviousExecutable(previous PreviousService) error {
-	return removePreviousExecutable(previous)
-}
 func RemoveInstalledExecutable(executable, stateDir string, purge bool) error {
-	if filepath.Base(executable) != "codex-usage" {
+	if filepath.Base(executable) != "token-usage" {
 		return fmt.Errorf("refusing to remove a different executable")
 	}
 	if purge {

@@ -17,7 +17,7 @@ import (
 )
 
 func TestMinuteRangeAPIUsesEventBoundariesAndAccountingTimezone(t *testing.T) {
-	t.Setenv("CODEX_USAGE_TIMEZONE", "Asia/Shanghai")
+	t.Setenv("TOKEN_USAGE_TIMEZONE", "Asia/Shanghai")
 	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatal(err)

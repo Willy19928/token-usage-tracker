@@ -11,15 +11,15 @@ import (
 
 func ManagedUpdateService() bool {
 	data, _ := os.ReadFile("/proc/self/cgroup")
-	return strings.Contains(string(data), "/codex-usage.service")
+	return strings.Contains(string(data), "/token-usage.service")
 }
 func StartUpdateHelper(executable, job, stateDir string, managed bool) error {
 	if !managed {
 		return StartDetached(executable, "_apply-update", job)
 	}
 	// A detached child remains in the original unit's cgroup. A transient unit
-	// keeps the helper alive when codex-usage.service is stopped.
-	args := []string{"--user", "--collect", "--unit", fmt.Sprintf("codex-usage-update-%d", time.Now().UnixNano()), "--setenv=CODEX_USAGE_HOME=" + stateDir}
+	// keeps the helper alive when token-usage.service is stopped.
+	args := []string{"--user", "--collect", "--unit", fmt.Sprintf("token-usage-update-%d", time.Now().UnixNano()), "--setenv=TOKEN_USAGE_HOME=" + stateDir}
 	for _, name := range []string{"CODEX_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"} {
 		if value := os.Getenv(name); value != "" {
 			args = append(args, "--setenv="+name+"="+value)
@@ -35,7 +35,7 @@ func StartUpdateHelper(executable, job, stateDir string, managed bool) error {
 func StopForUpdate(executable, stateDir string, managed bool) error {
 	pid, _ := ReadPID(stateDir)
 	if managed {
-		if output, err := exec.Command("systemctl", "--user", "stop", "codex-usage.service").CombinedOutput(); err != nil {
+		if output, err := exec.Command("systemctl", "--user", "stop", "token-usage.service").CombinedOutput(); err != nil {
 			return fmt.Errorf("停止服務: %w: %s", err, output)
 		}
 	}
@@ -69,7 +69,7 @@ func StartAfterUpdate(executable string, managed bool) error {
 	if !managed {
 		return StartDetached(executable, "daemon")
 	}
-	output, err := exec.Command("systemctl", "--user", "start", "codex-usage.service").CombinedOutput()
+	output, err := exec.Command("systemctl", "--user", "start", "token-usage.service").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("啟動服務: %w: %s", err, output)
 	}
