@@ -1640,6 +1640,8 @@ function limitTitle(provider, window) {
   if (provider === "claude") {
     const names = keys.map((key, index) => {
       const id = String(key).split(":").pop();
+      // Scoped meters (a model's or a surface's own limit) carry their name.
+      if (String(key).includes(":")) return t("limits.claude.scoped", { window: limitWindowName(window.window_minutes), name: labels[index] || id });
       return translatedOr(`limits.claude.${id}`, labels[index] || id);
     });
     return { title: joinList([...new Set(names)]) || limitWindowName(window.window_minutes), detail: "" };

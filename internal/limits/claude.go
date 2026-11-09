@@ -186,6 +186,14 @@ func claudeScope(raw json.RawMessage) (id, label string) {
 	if json.Unmarshal(raw, &scope) != nil {
 		return "", ""
 	}
+	// The endpoint nests the name under what the meter is for, such as
+	// {"model":{"id":null,"display_name":"Fable"},"surface":null}.
+	for _, kind := range []string{"model", "surface"} {
+		if inner, ok := scope[kind].(map[string]any); ok {
+			scope = inner
+			break
+		}
+	}
 	pick := func(names ...string) string {
 		for _, name := range names {
 			if value, ok := scope[name].(string); ok && value != "" {

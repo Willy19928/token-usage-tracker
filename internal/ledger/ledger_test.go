@@ -283,6 +283,9 @@ func TestModelNormalization(t *testing.T) {
 	if got := claudeCanonical("claude-sonnet-5.5-20261007"); got != "claude-sonnet-5-5" {
 		t.Errorf("claudeCanonical = %q", got)
 	}
+	if got := claudeCanonical("claude-mythos-5.2"); got != "claude-mythos-5-2" {
+		t.Errorf("claudeCanonical = %q", got)
+	}
 }
 
 func TestSelectFiltersBySourceAndDate(t *testing.T) {

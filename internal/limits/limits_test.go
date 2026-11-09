@@ -377,8 +377,8 @@ func TestClaudeCollectorReadsServerLimitRows(t *testing.T) {
 		fmt.Fprint(w, `{"five_hour":{"utilization":1,"resets_at":"2026-11-08T09:00:00Z"},"limits":[
 			{"kind":"session","group":"session","percent":35,"resets_at":"2026-11-08T10:20:00Z","scope":null},
 			{"kind":"weekly_all","group":"weekly","percent":82,"resets_at":"2026-11-14T07:00:00Z","scope":null},
-			{"kind":"weekly_scoped","group":"weekly","percent":40,"resets_at":"2026-11-14T07:00:00Z","scope":{"type":"model","id":"fable","display_label":"Fable"}},
-			{"kind":"weekly_scoped","group":"weekly","percent":null,"resets_at":null,"scope":{"type":"surface","id":"cowork"}}]}`)
+			{"kind":"weekly_scoped","group":"weekly","percent":40,"resets_at":"2026-11-14T07:00:00Z","scope":{"model":{"id":null,"display_name":"Fable"},"surface":null}},
+			{"kind":"weekly_scoped","group":"weekly","percent":null,"resets_at":null,"scope":{"model":null,"surface":{"id":"cowork","display_name":"Cowork"}}}]}`)
 	}))
 	defer server.Close()
 	collector := &ClaudeCollector{Store: st, ConfigDir: dir, Now: func() time.Time { return now },

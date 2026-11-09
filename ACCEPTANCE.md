@@ -1,5 +1,12 @@
 # 驗收紀錄
 
+## v1.1.1（2026-11-10）
+
+- Claude Code 針對單一模型或介面的額度（例如 Fable 的每週額度）改讀伺服器放在 `scope.model`／`scope.surface` 裡的名稱，顯示為「每週・Fable」，不再顯示成 `weekly_scoped`；Token 與成本只算該模型的用量。
+- 新增 Claude Fable 5.2、Mythos 5.2、Mythos 5.1、Mythos 5 的官方 Standard API 費率；Fable 5.2 與 Mythos 5.2 的快速模式以 2 倍計價。
+- Claude Sonnet 5.5 快取讀取單價改回官方價目頁的每百萬 $0.10（輸入價的 0.05 倍），Claude Code 與 Antigravity 都一樣；1.1.0 誤改為 $0.20。
+- `go test ./...`、`go vet ./...`、`gofmt -l .` 通過。
+
 ## v1.1.0（2026-11-09）
 
 - 新增「額度」頁：記錄 Codex、Claude Code、Antigravity 的 5 小時與每週額度（已用百分比、重置時間、帳號），列出目前週期與過去週期；「整體」以折線圖呈現三個工具的使用率，可選 1 天、7 天、30 天或自訂區間，5 小時與每週以按鈕切換。
