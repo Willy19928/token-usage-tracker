@@ -65,6 +65,8 @@ token-usage
 
 Or open **http://127.0.0.1:43189/**.
 
+If another program already uses port 43189 (or Windows has reserved it), the program switches to the next free port, saves it in the settings and prints the new address. If the service fails to start, the last lines of its log `daemon.log` are shown; when opened by double-click, the window stays open until you press Enter.
+
 ## Commands
 
 ```text
@@ -82,6 +84,8 @@ token-usage uninstall --purge       Standard mode: also delete the whole service
 The background service scans once at start. After that, Codex files are checked for changes every 30 seconds and scanned only when they change, with a fallback scan every 10 minutes; Claude Code and Antigravity are scanned every 10 minutes. The **Scan** button scans all three immediately.
 
 ## Uninstall
+
+On Windows, an installed copy is listed under Settings > Apps > Installed apps; choose Uninstall and confirm. It stops the service and removes the start at login (and the program in standard mode); data is kept. The command-line steps follow.
 
 Installing does not add the program to `PATH`, so run it by its full path. Any copy of the `token-usage` executable works, such as the one you just downloaded; it finds the installed service for the mode it runs in.
 

@@ -964,8 +964,10 @@ type agRate struct {
 }
 
 // Public Standard API equivalent, never subscription charges.
-// Verified 2026-10-27: https://ai.google.dev/gemini-api/docs/pricing
+// Verified 2026-11-13: https://aistudio.google.com/docs/pricing
 var agRateCards = map[string][]agRate{
+	"gemini-4-carbon":   {{mustDate("2026-11-10T00:00:00Z"), 2, 10, .1, 0}, {mustDate("2026-12-01T00:00:00Z"), 4, 20, .2, 0}},
+	"gemini-4-hydrogen": {{mustDate("2026-11-12T00:00:00Z"), 1.5, 7.5, .075, 0}},
 	"claude-opus-4-6":   {{mustDate("2026-02-05T00:00:00Z"), 5, 25, .5, 6.25}},
 	"claude-opus-5-5":   {{mustDate("2026-09-22T00:00:00Z"), 4, 20, .2, 5}},
 	"claude-sonnet-5-5": {{mustDate("2026-09-28T00:00:00Z"), 2, 10, .1, 2.5}},

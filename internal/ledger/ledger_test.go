@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"tokenusage/internal/model"
 )
@@ -268,14 +269,33 @@ func TestJSStringifyKeepsOrderAndNumberFormat(t *testing.T) {
 
 func TestModelNormalization(t *testing.T) {
 	for in, want := range map[string]string{
-		"Gemini 3.1 Pro (High)":    "gemini-3.1-pro",
-		"Gemini 3.8 Flash Tiered":  "gemini-3.8-flash",
-		"Claude Opus 5.5 Thinking": "claude-opus-5.5",
-		"Mystery":                  "antigravity-mystery",
+		"Gemini 3.1 Pro (High)":     "gemini-3.1-pro",
+		"Gemini 3.8 Flash Tiered":   "gemini-3.8-flash",
+		"Claude Opus 5.5 Thinking":  "claude-opus-5.5",
+		"Gemini 4 Hydrogen (XHigh)": "gemini-4-hydrogen",
+		"Gemini 4 Carbon (High)":    "gemini-4-carbon",
+		"Mystery":                   "antigravity-mystery",
 	} {
 		if got := normalizeAGModel(in); got != want {
 			t.Errorf("normalizeAGModel(%q) = %q, want %q", in, got, want)
 		}
+	}
+	for _, check := range []struct {
+		model, at     string
+		input, output float64
+	}{
+		{"gemini-4-carbon", "2026-11-10T08:00:00Z", 2, 10},
+		{"gemini-4-carbon", "2026-12-01T00:00:00Z", 4, 20},
+		{"gemini-4-hydrogen", "2026-11-12T08:00:00Z", 1.5, 7.5},
+	} {
+		at, _ := time.Parse(time.RFC3339, check.at)
+		rate := agHistoricalRate(check.model, at)
+		if rate == nil || rate.Input != check.input || rate.Output != check.output {
+			t.Errorf("agHistoricalRate(%s, %s) = %+v", check.model, check.at, rate)
+		}
+	}
+	if rate := agHistoricalRate("gemini-4-hydrogen", time.Date(2026, 11, 11, 0, 0, 0, 0, time.UTC)); rate != nil {
+		t.Errorf("gemini-4-hydrogen priced before release: %+v", rate)
 	}
 	if got := canonicalModel("claude-opus-5.5"); got != "claude-opus-5-5" {
 		t.Errorf("canonicalModel = %q", got)

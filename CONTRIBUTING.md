@@ -17,6 +17,8 @@
 | `internal/pricing` | 費用估算（Codex 價格表與外部已計價事件的彙總） |
 | `internal/server` | 本機 HTTP API 與來源切換（`provider` 參數） |
 | `internal/web/static` | 網頁（HTML、CSS、JavaScript、圖示） |
+| `cmd/token-usage/winres` | Windows 程式圖示（`icon.ico`）；`rsrc_windows_*.syso` 由它產生 |
+| `scripts/winicon` | 把 `icon.ico` 轉成 Go 連結時嵌入的 Windows 圖示資源 |
 
 ## 常用指令
 
@@ -36,6 +38,12 @@ token-usage serve
 ```
 
 `TOKEN_USAGE_HOME` 必須是專用資料夾；可在其中的 `config.json` 改用其他連接埠。
+
+更換程式圖示：替換 `cmd/token-usage/winres/icon.ico`（多尺寸，含 16 到 256 px），再執行下面的指令重新產生 `.syso`，並一併提交：
+
+```bash
+go run ./scripts/winicon -ico cmd/token-usage/winres/icon.ico -out cmd/token-usage
+```
 
 ## 修改原則
 

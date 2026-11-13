@@ -195,6 +195,77 @@ func TestCodexCollectorAttributesAccountsFromTrackingStart(t *testing.T) {
 	}
 }
 
+// Codex sometimes rewrites old conversations in place. Reading them again
+// must keep windows that already belong to a known account with that account
+// instead of splitting them off as unknown accounts.
+func TestCodexRereadKeepsWindowsOfKnownAccounts(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	home := t.TempDir()
+	dir := filepath.Join(home, "sessions", "2026", "11", "03")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 11, 8, 6, 0, 0, 0, time.UTC)
+	collector := &CodexCollector{Store: st, Homes: func() ([]string, error) { return []string{home}, nil }, Now: func() time.Time { return start }}
+	before := start.Add(-5 * 24 * time.Hour)
+	fiveHour := &codexWindow{UsedPercent: 40, WindowMinutes: 300, ResetsAt: before.Add(3 * time.Hour).Unix()}
+	weekly := &codexWindow{UsedPercent: 60, WindowMinutes: 10080, ResetsAt: before.Add(50 * time.Hour).Unix()}
+	path := filepath.Join(dir, "rollout-old.jsonl")
+	content := rateLine(before, "team", fiveHour, weekly) + rateLine(before.Add(10*time.Minute), "team", fiveHour, weekly)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := collector.Collect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	unknown := HistoryPrefix + "team:" + strconv.FormatInt(weekly.ResetsAt, 10)
+	const known = "acct-t/user-t"
+	// The history is assigned to its account directly.
+	for _, stmt := range []string{
+		`UPDATE windows SET account=? WHERE account=?`,
+		`UPDATE readings SET account=? WHERE account=?`,
+		`UPDATE latest SET account=? WHERE account=?`,
+		`UPDATE codex_usage_accounts SET account=? WHERE account=?`,
+	} {
+		if _, err := st.db.ExecContext(ctx, stmt, known, unknown); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The rewrite is caught half-written, then complete.
+	if err := os.WriteFile(path, []byte(content[:len(content)/2]), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := collector.Collect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := collector.Collect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	windows, err := st.Windows(ctx, Codex, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(windows) != 2 {
+		t.Fatalf("windows = %+v", windows)
+	}
+	for _, w := range windows {
+		if w.Account != known {
+			t.Fatalf("window split off after reread: %+v", w)
+		}
+	}
+	ranges, err := st.CodexUsageRanges(ctx, known, before.Add(-time.Hour), before.Add(time.Hour))
+	if err != nil || len(ranges) == 0 {
+		t.Fatalf("usage of the known account after reread = %v, %v", ranges, err)
+	}
+	if ranges, _ := st.CodexUsageRanges(ctx, unknown, before.Add(-time.Hour), before.Add(time.Hour)); len(ranges) != 0 {
+		t.Fatalf("usage moved back to the unknown account: %v", ranges)
+	}
+}
+
 func TestAdoptHistoryKeepsTheAccountsNewerLatestReading(t *testing.T) {
 	st := openTestStore(t)
 	ctx := context.Background()

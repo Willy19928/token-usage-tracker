@@ -448,13 +448,27 @@ func (s *Store) hasWindow(ctx context.Context, provider, account, key string, re
 // is named after its plan and the reset of its longest window.
 const HistoryPrefix = "history:"
 
-// historyAccount returns the unknown account whose window anchorKey resets at
-// reset, reusing an existing one when the reset drifted by a few seconds.
+// historyAccount returns the account of a snapshot taken before account
+// tracking began. A window that already belongs to a known account (adopted
+// earlier, or assigned directly) keeps that account, so reading old
+// conversations again, as when Codex rewrites them, does not split it off.
+// Otherwise it is the unknown account whose window anchorKey resets at reset,
+// reusing an existing one when the reset drifted by a few seconds.
 func (s *Store) historyAccount(ctx context.Context, plan, anchorKey string, reset time.Time) (string, error) {
 	var account string
 	r := reset.Unix()
 	tolerance := int64(resetTolerance.Seconds())
-	err := s.db.QueryRowContext(ctx, `SELECT account FROM windows WHERE provider=? AND account LIKE ? AND limit_key=?
+	err := s.db.QueryRowContext(ctx, `SELECT account FROM windows WHERE provider=? AND account<>'' AND account NOT LIKE ?
+		AND limit_key=? AND resets_at BETWEEN ? AND ? AND (plan=? OR plan='' OR ?='')
+		ORDER BY ABS(resets_at-?) LIMIT 1`,
+		Codex, HistoryPrefix+"%", anchorKey, r-tolerance, r+tolerance, plan, plan, r).Scan(&account)
+	if err == nil {
+		return account, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	err = s.db.QueryRowContext(ctx, `SELECT account FROM windows WHERE provider=? AND account LIKE ? AND limit_key=?
 		AND resets_at BETWEEN ? AND ? ORDER BY ABS(resets_at-?) LIMIT 1`,
 		Codex, HistoryPrefix+plan+":%", anchorKey, r-tolerance, r+tolerance, r).Scan(&account)
 	if errors.Is(err, sql.ErrNoRows) {

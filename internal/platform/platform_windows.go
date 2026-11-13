@@ -90,6 +90,9 @@ func UninstallService(executable, stateDir string) error {
 	}
 	_, _ = exec.Command(system32("reg.exe"), "delete",
 		`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", "TokenUsage", "/f").CombinedOutput()
+	if err := removeUninstallEntry(); err != nil {
+		return err
+	}
 	for _, path := range []string{pidPath, filepath.Join(stateDir, "token-usage-start.vbs")} {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return err

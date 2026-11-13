@@ -39,6 +39,7 @@ type Scanner struct {
 	mu                sync.Mutex
 	busy              atomic.Bool
 	turnBaselines     map[string]bool // private to one file transaction
+	pointsReady       map[string]bool // sessions whose earlier points are recorded
 }
 
 type ScanResult struct {
@@ -662,12 +663,18 @@ func (s *Scanner) processRecord(
 			return err
 		}
 		rawCurrent := info.Total.usage()
+		last := info.Last.usage()
+		previous := cursor.Cumulative
 		current := info.Total.withMissingSubsets(cursor.Cumulative)
 		if current.IsZero() {
 			return nil
 		}
 		if current.Equal(cursor.Cumulative) {
 			result.Duplicates++
+			cursor.InheritedBaseline = false
+			if err := s.recordCounted(ctx, cursor, previous, rawCurrent, last); err != nil {
+				return err
+			}
 			// A repeated snapshot can establish that a new turn continued the
 			// prior counter. Persist that interpretation even without a new event;
 			// otherwise the next scan can inherit the previous turn's stale scope.
@@ -699,9 +706,17 @@ func (s *Scanner) processRecord(
 			}
 			return nil
 		}
-		if cursor.InheritedBaseline && !current.MonotonicFrom(cursor.Cumulative) {
+		if handled, err := s.reconcileSessionSnapshot(ctx, env, offset, path, home, meta, cursor, result,
+			rawCurrent, current, last); err != nil || handled {
+			return err
+		}
+		_, isRequest := requestOf(rawCurrent, last)
+		if cursor.InheritedBaseline && !current.MonotonicFrom(cursor.Cumulative) && !(sessionScoped(cursor) && isRequest) {
 			// A restored/resumed rollout can replay an older prefix. Keep the
 			// session-wide high-water mark and wait until the file catches up.
+			// Session-wide requests were checked against the counted states
+			// above; one that matches none is counted once below as a flagged
+			// fallback, and the recorded state keeps it from counting twice.
 			if cursor.Cumulative.MonotonicFrom(current) || current.Total <= cursor.Cumulative.Total {
 				result.Duplicates++
 				return nil
@@ -722,7 +737,6 @@ func (s *Scanner) processRecord(
 				delta = current.Sub(cursor.Cumulative)
 				cursor.InheritedBaseline = false
 			} else {
-				last := info.Last.usage()
 				if last.IsZero() || !last.NonNegative() {
 					return &recordError{fmt.Errorf("累計 Token 回退且 last_token_usage 不可用: previous=(%s), current=(%s)",
 						cursor.Cumulative, current)}
@@ -746,6 +760,20 @@ func (s *Scanner) processRecord(
 					result.Warnings++
 				}
 			}
+		} else if _, ok := requestOf(rawCurrent, last); ok && sessionScoped(cursor) &&
+			cursor.ForkedFromID != "" && !rawCurrent.Equal(last) {
+			// A file of a forked conversation that starts mid-counter with no
+			// counted state to continue from: its total includes usage counted
+			// elsewhere (the parent, or other files of this conversation read
+			// later). Count only its own request and say so.
+			delta = last
+			confidence = model.ConfidenceGapFallback
+			if err := s.Store.AddWarning(ctx, "cumulative_gap_fallback", path,
+				fmt.Sprintf("offset=%d current=(%s) last=(%s)，分支對話檔沒有可接續的已計入累計，使用 last_token_usage 保守補位",
+					offset, rawCurrent, last)); err != nil {
+				return err
+			}
+			result.Warnings++
 		}
 		if delta.IsZero() {
 			cursor.Cumulative = current
@@ -793,6 +821,10 @@ func (s *Scanner) processRecord(
 		}
 		cursor.LastEventID = event.ID
 		cursor.Cumulative = current
+		cursor.InheritedBaseline = false
+		if err := s.recordCounted(ctx, cursor, previous, rawCurrent, last); err != nil {
+			return err
+		}
 		if err := s.Store.PutSessionProgress(ctx, sessionID, cursor.Segment, current, cursor.Accounting); err != nil {
 			return err
 		}

@@ -72,8 +72,11 @@ type FileCursor struct {
 	PrefixHash    string
 	LastEventID   string
 	Cumulative    model.TokenUsage
-	// InheritedBaseline is transient and is not persisted in file_cursors. It
-	// marks a session-wide cumulative value loaded for a new/restored file.
+	// InheritedBaseline marks a session-wide cumulative value loaded for a
+	// new/restored file rather than this file's own last snapshot. It is
+	// persisted: a file is often read once before its first token_count and
+	// again after, and the second read must still know the baseline is not its
+	// own.
 	InheritedBaseline bool
 }
 
@@ -375,6 +378,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := migrateResponses(ctx, tx, databaseVersion); err != nil {
+		return err
+	}
+	if err := migrateSessionPoints(ctx, tx); err != nil {
 		return err
 	}
 	if databaseVersion > 0 && databaseVersion < 7 {
@@ -854,12 +860,14 @@ func minInt64(left, right int64) int64 {
 func (s *Store) GetCursor(ctx context.Context, path string) (FileCursor, bool, error) {
 	var out FileCursor
 	var cumulative, accounting string
+	var inherited int
 	err := s.writer().QueryRowContext(ctx, `SELECT path,codex_home,size,modified_nanos,offset,
-		session_id,forked_from_id,replay_offset,model,turn_id,project_path,source,agent_type,segment,prefix_hash,last_event_id,cumulative_json,accounting_json
+		session_id,forked_from_id,replay_offset,model,turn_id,project_path,source,agent_type,segment,prefix_hash,last_event_id,cumulative_json,accounting_json,inherited_baseline
 		FROM file_cursors WHERE path=?`, path).Scan(
 		&out.Path, &out.CodexHome, &out.Size, &out.ModifiedNanos, &out.Offset,
 		&out.SessionID, &out.ForkedFromID, &out.ReplayOffset, &out.Model, &out.TurnID, &out.ProjectPath, &out.Source,
-		&out.AgentType, &out.Segment, &out.PrefixHash, &out.LastEventID, &cumulative, &accounting)
+		&out.AgentType, &out.Segment, &out.PrefixHash, &out.LastEventID, &cumulative, &accounting, &inherited)
+	out.InheritedBaseline = inherited != 0
 	if errors.Is(err, sql.ErrNoRows) {
 		return FileCursor{Path: path}, false, nil
 	}
@@ -879,7 +887,7 @@ func (s *Store) PutCursor(ctx context.Context, in FileCursor) error {
 	accounting, _ := json.Marshal(in.Accounting)
 	_, err := s.writer().ExecContext(ctx, `INSERT INTO file_cursors(
 		path,codex_home,size,modified_nanos,offset,session_id,forked_from_id,replay_offset,model,turn_id,project_path,
-		source,agent_type,segment,prefix_hash,last_event_id,cumulative_json,accounting_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		source,agent_type,segment,prefix_hash,last_event_id,cumulative_json,accounting_json,inherited_baseline) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(path) DO UPDATE SET codex_home=excluded.codex_home,size=excluded.size,
 		modified_nanos=excluded.modified_nanos,offset=excluded.offset,session_id=excluded.session_id,
 		forked_from_id=excluded.forked_from_id,replay_offset=excluded.replay_offset,
@@ -887,11 +895,12 @@ func (s *Store) PutCursor(ctx context.Context, in FileCursor) error {
 		source=excluded.source,agent_type=excluded.agent_type,segment=excluded.segment,
 		prefix_hash=excluded.prefix_hash,
 		last_event_id=excluded.last_event_id,
-		cumulative_json=excluded.cumulative_json,accounting_json=excluded.accounting_json`,
+		cumulative_json=excluded.cumulative_json,accounting_json=excluded.accounting_json,
+		inherited_baseline=excluded.inherited_baseline`,
 		in.Path, in.CodexHome, in.Size, in.ModifiedNanos, in.Offset, in.SessionID,
 		in.ForkedFromID, in.ReplayOffset,
 		in.Model, in.TurnID, in.ProjectPath, in.Source, defaultAgent(in.AgentType),
-		in.Segment, in.PrefixHash, in.LastEventID, string(data), string(accounting))
+		in.Segment, in.PrefixHash, in.LastEventID, string(data), string(accounting), boolInt(in.InheritedBaseline))
 	return err
 }
 
@@ -947,6 +956,8 @@ func (s *Store) ResetHistorical(ctx context.Context) error {
 		`DELETE FROM response_records`,
 		`DELETE FROM file_cursors`,
 		`DELETE FROM session_cursors`,
+		`DELETE FROM session_points`,
+		`DELETE FROM session_point_backfills`,
 		`DELETE FROM sessions`,
 		`DELETE FROM scan_state`,
 		`DELETE FROM warnings`,

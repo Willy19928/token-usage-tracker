@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"encoding/csv"
 	"encoding/json"
@@ -33,7 +34,7 @@ import (
 )
 
 var (
-	Version   = "1.1.1"
+	Version   = "1.1.2"
 	Commit    = "dev"
 	BuildDate = "unknown"
 )
@@ -117,9 +118,22 @@ func (c CLI) Run(args []string) int {
 	}
 	if err != nil {
 		fmt.Fprintln(c.Stderr, c.tr("error.prefix"), err)
+		if command == "open" || command == "install" {
+			c.pauseIfOwnConsole()
+		}
 		return 1
 	}
 	return 0
+}
+
+// pauseIfOwnConsole keeps a console window opened by double-click on screen
+// until the error has been read; in a terminal it returns at once.
+func (c CLI) pauseIfOwnConsole() {
+	if !platform.OwnsConsole() {
+		return
+	}
+	fmt.Fprint(c.Stderr, c.tr("pause.close"))
+	_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
 }
 
 func (c CLI) usage() {
@@ -334,7 +348,7 @@ func backgroundLedgerScan(ctx context.Context, srv *usageServer.Server) {
 	}
 }
 
-func (c CLI) serve(args []string, daemon bool) error {
+func (c CLI) serve(args []string, daemon bool) (err error) {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	flags.SetOutput(c.Stderr)
 	if err := flags.Parse(args); err != nil {
@@ -342,6 +356,20 @@ func (c CLI) serve(args []string, daemon bool) error {
 	}
 	if daemon {
 		platform.HideConsole()
+		// The service has no console, so its log is the only place where a
+		// failure to start (for example a port it cannot use) can be read.
+		if paths, pathErr := config.ResolvePaths(); pathErr == nil && config.EnsurePrivateDir(paths.StateDir) == nil {
+			logPath := filepath.Join(paths.StateDir, "daemon.log")
+			if file, openErr := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); openErr == nil {
+				defer file.Close()
+				log.SetOutput(file)
+			}
+		}
+		defer func() {
+			if err != nil {
+				log.Printf("service stopped: %v", err)
+			}
+		}()
 	}
 	state, err := openState()
 	if err != nil {
@@ -352,13 +380,10 @@ func (c CLI) serve(args []string, daemon bool) error {
 		return nil
 	}
 	if daemon {
-		if err := config.EnsurePrivateDir(state.paths.StateDir); err != nil {
-			return err
-		}
-		logPath := filepath.Join(state.paths.StateDir, "daemon.log")
-		if file, openErr := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); openErr == nil {
-			defer file.Close()
-			log.SetOutput(file)
+		if self, selfErr := os.Executable(); selfErr == nil {
+			if syncErr := platform.SyncUninstallEntry(self, state.paths.StateDir, Version); syncErr != nil {
+				log.Printf("installed apps entry: %v", syncErr)
+			}
 		}
 	}
 	removePID, err := platform.WritePID(state.paths.StateDir)
@@ -470,6 +495,12 @@ func (c CLI) open(args []string) error {
 	}
 	rawURL := fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
 	if !healthOK(rawURL) {
+		if err := c.ensurePort(paths, &cfg); err != nil {
+			return err
+		}
+		rawURL = fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
+	}
+	if !healthOK(rawURL) {
 		executable := paths.InstalledEXE
 		if _, statErr := os.Stat(executable); statErr != nil {
 			executable, err = os.Executable()
@@ -477,6 +508,9 @@ func (c CLI) open(args []string) error {
 				return err
 			}
 		}
+		logPath := filepath.Join(paths.StateDir, "daemon.log")
+		logStart := fileSize(logPath)
+		fmt.Fprintln(c.Stdout, c.tr("open.starting"))
 		if err := platform.StartDetached(executable, "daemon"); err != nil {
 			return fmt.Errorf(c.tr("open.start"), err)
 		}
@@ -485,7 +519,11 @@ func (c CLI) open(args []string) error {
 			time.Sleep(180 * time.Millisecond)
 		}
 		if !healthOK(rawURL) {
-			return errors.New(c.tr("open.notReady"))
+			message := c.tr("open.notReady")
+			if tail := logTail(logPath, logStart, 6); tail != "" {
+				message += "\n" + c.tr("open.logTail", logPath) + "\n" + tail
+			}
+			return errors.New(message)
 		}
 	}
 	if platform.HasGUI() {
@@ -531,6 +569,89 @@ func healthOK(baseURL string) bool {
 		return false
 	}
 	return payload.OK
+}
+
+// portSearchRange is how many ports after the configured one are tried when
+// another program holds it.
+const portSearchRange = 100
+
+// ensurePort leaves the configured port alone when it is free or this
+// program's service holds it. When another program holds it, or Windows has
+// reserved it, the next free port is saved to the settings.
+func (c CLI) ensurePort(paths config.Paths, cfg *config.Config) error {
+	if portFree(cfg.ListenAddress, cfg.Port) || serviceRunning(paths, cfg.Port) {
+		return nil
+	}
+	last := min(cfg.Port+portSearchRange, 65535)
+	for port := cfg.Port + 1; port <= last; port++ {
+		if !portFree(cfg.ListenAddress, port) {
+			continue
+		}
+		fmt.Fprintf(c.Stdout, c.tr("port.moved"), cfg.Port, port, port)
+		cfg.Port = port
+		return config.Save(paths, *cfg)
+	}
+	return fmt.Errorf(c.tr("port.none"), cfg.Port, last, paths.ConfigPath)
+}
+
+func portFree(address string, port int) bool {
+	if address == "" || address == "localhost" {
+		address = "127.0.0.1"
+	}
+	listener, err := net.Listen("tcp4", net.JoinHostPort(address, strconv.Itoa(port)))
+	if err != nil {
+		return false
+	}
+	_ = listener.Close()
+	return true
+}
+
+// serviceRunning reports whether the port belongs to this program's service:
+// it answers the health check, or the service's PID file names a live
+// process of this program.
+func serviceRunning(paths config.Paths, port int) bool {
+	url := fmt.Sprintf("http://127.0.0.1:%d", port)
+	for attempt := 0; attempt < 3; attempt++ {
+		if healthOK(url) {
+			return true
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	pid, err := platform.ReadPID(paths.StateDir)
+	if err != nil {
+		return false
+	}
+	self, _ := os.Executable()
+	return platform.ProcessRunsExecutable(pid, paths.InstalledEXE, self)
+}
+
+func fileSize(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
+}
+
+// logTail returns the last lines written to path after offset.
+func logTail(path string, offset int64, lines int) string {
+	file, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return ""
+	}
+	data, err := io.ReadAll(io.LimitReader(file, 64<<10))
+	if err != nil {
+		return ""
+	}
+	all := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(all) > lines {
+		all = all[len(all)-lines:]
+	}
+	return strings.TrimSpace(strings.Join(all, "\n"))
 }
 
 func (c CLI) scan(args []string) error {
@@ -716,10 +837,16 @@ func (c CLI) install(args []string) error {
 	}
 	state.store.Close()
 
+	if err := c.ensurePort(paths, &cfg); err != nil {
+		return err
+	}
+	logPath := filepath.Join(paths.StateDir, "daemon.log")
+	logStart := fileSize(logPath)
 	serviceResult, err := platform.InstallService(destination, paths.StateDir)
 	if err != nil {
 		return err
 	}
+	fmt.Fprintln(c.Stdout, c.tr("open.starting"))
 	serviceURL := fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) && !healthOK(serviceURL) {
@@ -727,7 +854,14 @@ func (c CLI) install(args []string) error {
 	}
 	if !healthOK(serviceURL) {
 		_ = platform.UninstallService(destination, paths.StateDir)
-		return errors.New(c.tr("install.health"))
+		message := c.tr("install.health")
+		if tail := logTail(logPath, logStart, 6); tail != "" {
+			message += "\n" + c.tr("open.logTail", logPath) + "\n" + tail
+		}
+		return errors.New(message)
+	}
+	if err := platform.RegisterUninstallEntry(destination, Version); err != nil {
+		fmt.Fprintln(c.Stderr, c.tr("install.warning"), err)
 	}
 	if serviceResult.Detail != "" {
 		fmt.Fprintln(c.Stdout, c.tr("install.service"), serviceResult.Detail)
@@ -744,6 +878,7 @@ func (c CLI) uninstall(args []string) error {
 	flags := flag.NewFlagSet("uninstall", flag.ContinueOnError)
 	flags.SetOutput(c.Stderr)
 	purge := flags.Bool("purge", false, c.tr("flag.purge"))
+	gui := flags.Bool("gui", false, c.tr("flag.gui"))
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -756,6 +891,9 @@ func (c CLI) uninstall(args []string) error {
 	_, portable := config.PortableDataDir()
 	if portable && *purge {
 		return errors.New("可攜模式不支援 --purge；如要刪除資料，請先執行 uninstall，再自行刪除 data 資料夾")
+	}
+	if *gui {
+		return c.uninstallWithDialogs(paths, portable)
 	}
 	if err := platform.UninstallService(paths.InstalledEXE, paths.StateDir); err != nil {
 		return err
@@ -772,6 +910,37 @@ func (c CLI) uninstall(args []string) error {
 	} else {
 		fmt.Fprintln(c.Stdout, c.tr("uninstall.kept"), paths.StateDir)
 		fmt.Fprintln(c.Stdout, c.tr("uninstall.purgeHint"))
+	}
+	return nil
+}
+
+// uninstallWithDialogs is the Uninstall button in Windows Installed apps:
+// confirm in a message box, uninstall keeping the data, report the result.
+func (c CLI) uninstallWithDialogs(paths config.Paths, portable bool) error {
+	if platform.OwnsConsole() {
+		platform.HideConsole()
+	}
+	title := c.tr("uninstall.title")
+	confirm, kept := c.tr("uninstall.confirmStandard", paths.StateDir), c.tr("uninstall.kept")+"\n"+paths.StateDir
+	if portable {
+		confirm, kept = c.tr("uninstall.confirmPortable", paths.InstallDir), c.tr("uninstall.portable")+"\n"+paths.InstallDir
+	}
+	if !platform.ConfirmDialog(title, confirm) {
+		return nil
+	}
+	if err := platform.UninstallService(paths.InstalledEXE, paths.StateDir); err != nil {
+		platform.NoticeDialog(title, c.tr("error.prefix")+" "+err.Error(), true)
+		return err
+	}
+	platform.NoticeDialog(title, kept, false)
+	if portable {
+		return nil
+	}
+	// The program file is removed by a helper that waits for this process to
+	// exit, so it starts only after the message box is closed.
+	if err := platform.RemoveInstalledExecutable(paths.InstalledEXE, paths.StateDir, false); err != nil {
+		platform.NoticeDialog(title, c.tr("error.prefix")+" "+err.Error(), true)
+		return err
 	}
 	return nil
 }
