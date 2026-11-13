@@ -167,11 +167,20 @@ func RemoveInstalledExecutable(executable, stateDir string, purge bool) error {
 	return nil
 }
 
-func systemdQuote(path string) string {
-	escaped := strings.NewReplacer(
-		`\`, `\\`,
-		`"`, `\"`,
-		`%`, `%%`,
-	).Replace(path)
-	return `"` + escaped + `"`
+// ServiceExecutable returns the executable the systemd user unit starts as
+// the background service for stateDir.
+func ServiceExecutable(stateDir string) (string, bool) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", false
+	}
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		configHome = filepath.Join(home, ".config")
+	}
+	data, err := os.ReadFile(filepath.Join(configHome, "systemd", "user", "token-usage.service"))
+	if err != nil {
+		return "", false
+	}
+	return launcherExecutableSystemd(string(data), stateDir)
 }

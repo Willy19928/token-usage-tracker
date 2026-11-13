@@ -145,12 +145,40 @@ func updatePaths(paths config.Paths) config.Paths {
 	var record struct {
 		Executable string `json:"executable"`
 	}
-	data, err := os.ReadFile(filepath.Join(paths.StateDir, ".token-usage-install.json"))
+	data, err := os.ReadFile(installRecordPath(paths.StateDir))
 	if err == nil && json.Unmarshal(data, &record) == nil && filepath.IsAbs(record.Executable) && filepath.Base(record.Executable) == filepath.Base(paths.InstalledEXE) {
 		paths.InstalledEXE = filepath.Clean(record.Executable)
 		paths.InstallDir = filepath.Dir(paths.InstalledEXE)
+		return paths
+	}
+	// The service is started with TOKEN_USAGE_HOME, which puts the program in a
+	// bin folder inside the service folder; a standard Windows or Linux install
+	// keeps it elsewhere. Installs made before the install record existed are
+	// found through the launcher that starts the service, and remembered.
+	if _, statErr := os.Stat(paths.InstalledEXE); statErr != nil {
+		if executable, ok := serviceExecutable(paths.StateDir); ok && filepath.IsAbs(executable) &&
+			filepath.Base(executable) == filepath.Base(paths.InstalledEXE) {
+			if _, statErr := os.Stat(executable); statErr == nil {
+				paths.InstalledEXE = filepath.Clean(executable)
+				paths.InstallDir = filepath.Dir(paths.InstalledEXE)
+				_ = writeInstallRecord(paths.StateDir, paths.InstalledEXE)
+			}
+		}
 	}
 	return paths
+}
+
+// serviceExecutable is replaceable in tests.
+var serviceExecutable = platform.ServiceExecutable
+
+func installRecordPath(stateDir string) string {
+	return filepath.Join(stateDir, ".token-usage-install.json")
+}
+
+// writeInstallRecord remembers where the installed program is, so a service
+// started with TOKEN_USAGE_HOME can still update it in place.
+func writeInstallRecord(stateDir, executable string) error {
+	return updater.WriteJSON(installRecordPath(stateDir), map[string]string{"executable": executable})
 }
 
 func samePath(a, b string) bool {

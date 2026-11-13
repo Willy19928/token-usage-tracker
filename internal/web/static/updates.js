@@ -25,7 +25,9 @@
     $("#updateLastDownload").classList.toggle("hidden", !status.last_download);
     $("#updateLastDownload").textContent = status.last_download ? t("update.lastDownload", {path: status.last_download}) : "";
     $("#updateDirectoryHint").textContent = t(directoryDirty ? "update.directoryUnsaved" : "update.directoryHint");
-    $("#updatePortable").classList.toggle("hidden", status.can_install);
+    // Only relevant when there is something to install; next to "updated" or
+    // "latest already" it would contradict the status line.
+    $("#updatePortable").classList.toggle("hidden", status.can_install || !status.available);
     const phase = status.checking || pending ? "checking" : busy() || ["rolled_back", "failed"].includes(status.phase) ? status.phase : status.available ? "available" : status.phase === "updated" ? "updated" : status.latest_version ? "latestAlready" : "unchecked";
     $("#updateStatus").textContent = t(`update.${phase}`, { version: status.latest_version });
     $("#updateError").textContent = i18n.translateServer(status.error) || "";

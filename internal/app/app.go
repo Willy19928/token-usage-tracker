@@ -34,7 +34,7 @@ import (
 )
 
 var (
-	Version   = "1.1.2"
+	Version   = "1.1.3"
 	Commit    = "dev"
 	BuildDate = "unknown"
 )
@@ -820,6 +820,9 @@ func (c CLI) install(args []string) error {
 		}
 	}
 	fmt.Fprintln(c.Stdout, c.tr("install.installed"), destination)
+	if err := writeInstallRecord(paths.StateDir, destination); err != nil {
+		fmt.Fprintln(c.Stderr, c.tr("install.warning"), err)
+	}
 
 	state, err := openState()
 	if err != nil {

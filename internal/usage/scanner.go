@@ -760,21 +760,10 @@ func (s *Scanner) processRecord(
 					result.Warnings++
 				}
 			}
-		} else if _, ok := requestOf(rawCurrent, last); ok && sessionScoped(cursor) &&
-			cursor.ForkedFromID != "" && !rawCurrent.Equal(last) {
-			// A file of a forked conversation that starts mid-counter with no
-			// counted state to continue from: its total includes usage counted
-			// elsewhere (the parent, or other files of this conversation read
-			// later). Count only its own request and say so.
-			delta = last
-			confidence = model.ConfidenceGapFallback
-			if err := s.Store.AddWarning(ctx, "cumulative_gap_fallback", path,
-				fmt.Sprintf("offset=%d current=(%s) last=(%s)，分支對話檔沒有可接續的已計入累計，使用 last_token_usage 保守補位",
-					offset, rawCurrent, last)); err != nil {
-				return err
-			}
-			result.Warnings++
 		}
+		// A file that starts mid-counter with no counted state before it (for
+		// example a subagent whose earlier turns Codex compacted away) keeps its
+		// whole cumulative: that usage is real and appears nowhere else.
 		if delta.IsZero() {
 			cursor.Cumulative = current
 			return nil
@@ -1190,7 +1179,7 @@ func DiscoverHome(ctx context.Context, home string) HomeDiscovery {
 				out.WarningKind = "state_rollout_missing"
 				out.Warning = fmt.Sprintf("狀態資料庫中 %d 筆紀錄的 JSONL 仍不可用；已檢查 sessions 與 archived_sessions 並嘗試比對搬遷路徑。現有統計已保留，請核對 Codex Home 或從備份恢復原始檔案；重建無法恢復已刪除的 JSONL。", missing)
 			}
-			sort.Strings(out.Paths)
+			sortRollouts(out.Paths)
 			return out
 		} else {
 			out.WarningKind = "state_schema"
@@ -1289,8 +1278,22 @@ func walkRollouts(home string) []string {
 			return nil
 		})
 	}
-	sort.Strings(out)
+	sortRollouts(out)
 	return out
+}
+
+// sortRollouts orders rollout files by the creation time in their names
+// (rollout-YYYY-MM-DDThh-mm-ss-<id>.jsonl), whatever folder they are in, so a
+// conversation is read before the files that continue it, even when Codex has
+// moved one of them to archived_sessions. The full path breaks ties.
+func sortRollouts(paths []string) {
+	sort.SliceStable(paths, func(i, j int) bool {
+		left, right := rolloutName(paths[i]), rolloutName(paths[j])
+		if left != right {
+			return left < right
+		}
+		return paths[i] < paths[j]
+	})
 }
 
 // readSelectiveRecord streams a JSONL record. It keeps only a small probe for

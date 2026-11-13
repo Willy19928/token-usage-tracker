@@ -259,3 +259,13 @@ func RemoveInstalledExecutable(executable, stateDir string, purge bool) error {
 	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: detachedProcess}
 	return command.Start()
 }
+
+// ServiceExecutable returns the executable the login launcher in stateDir
+// starts as the background service.
+func ServiceExecutable(stateDir string) (string, bool) {
+	data, err := os.ReadFile(filepath.Join(stateDir, "token-usage-start.vbs"))
+	if err != nil {
+		return "", false
+	}
+	return launcherExecutableVBS(string(data))
+}

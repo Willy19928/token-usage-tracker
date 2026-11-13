@@ -199,3 +199,7 @@ func stopLaunchAgent(executable, stateDir string) error {
 	}
 	return stopDarwinProcess(pid, executable)
 }
+
+// ServiceExecutable is not needed on macOS: the program is installed inside
+// the service folder, where the service already looks for it.
+func ServiceExecutable(stateDir string) (string, bool) { return "", false }

@@ -34,3 +34,5 @@ func RemoveInstalledExecutable(executable, stateDir string, purge bool) error {
 	}
 	return nil
 }
+
+func ServiceExecutable(stateDir string) (string, bool) { return "", false }

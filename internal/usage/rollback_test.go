@@ -204,23 +204,64 @@ func TestRollbackFilesScannedBeforeTheirSnapshotArrives(t *testing.T) {
 	checkOutcome(t, "after restart", outcome(t, st), want)
 }
 
-// The result must not depend on which file is read first.
-func TestRollbackFilesInAnyScanOrder(t *testing.T) {
+// Codex moves files to archived_sessions independently, and a plain path
+// sort would read an archived continuation before the conversation it
+// continues. Files are read in creation order wherever they are.
+func TestRollbackFilesInEitherFolder(t *testing.T) {
 	files, want := rollbackScenario()
-	orders := [][]int{{0, 1, 2, 3, 4}, {4, 3, 2, 1, 0}, {1, 3, 0, 4, 2}, {2, 0, 4, 1, 3}}
-	for _, order := range orders {
-		t.Run(fmt.Sprint(order), func(t *testing.T) {
+	placements := [][]bool{ // true: the file is in archived_sessions
+		{false, false, false, false, false},
+		{false, true, true, true, true},
+		{true, false, false, false, false},
+		{false, true, false, true, false},
+		{true, true, true, true, true},
+	}
+	for _, archived := range placements {
+		t.Run(fmt.Sprint(archived), func(t *testing.T) {
 			home, dir, st := newRollbackHome(t)
-			for _, index := range order {
-				writeRollout(t, dir, files[index], len(files[index].lines))
-				scanOnce(t, st, home, false)
+			archive := filepath.Join(home, "archived_sessions")
+			if err := os.MkdirAll(archive, 0o700); err != nil {
+				t.Fatal(err)
 			}
-			got := outcome(t, st)
-			if got.total != want {
-				t.Fatalf("order %v: total=%d want %d (warnings %v)", order, got.total, want, got.warnings)
+			for index, file := range files {
+				target := dir
+				if archived[index] {
+					target = archive
+				}
+				writeRollout(t, target, file, len(file.lines))
 			}
+			scanOnce(t, st, home, false)
+			checkOutcome(t, "scan", outcome(t, st), want)
+			scanOnce(t, st, home, true)
+			checkOutcome(t, "rebuild", outcome(t, st), want)
 		})
 	}
+}
+
+// A subagent file whose earlier turns Codex compacted away starts with a
+// counter that already holds that usage, and no earlier snapshot exists
+// anywhere. Its whole final cumulative is its usage; counting only the first
+// request would drop the compacted turns.
+func TestCompactedSubagentKeepsItsWholeCumulative(t *testing.T) {
+	const child, parent = "01a0ee00-0000-7000-8000-000000000010", "01a0ed00-0000-7000-8000-000000000011"
+	turn := "01a0ee40-0000-7000-8000-000000000012" // a later turn of the subagent
+	earlier := state(5000)                         // compacted turns
+	first := state(5300)
+	final := state(5700)
+	file := rolloutFile{name: "rollout-2026-10-01T08-00-00-" + child + ".jsonl", lines: []string{
+		fmt.Sprintf(`{"timestamp":"2026-10-01T00:00:00Z","type":"session_meta","payload":{"id":%q,"forked_from_id":%q,"cwd":"/p","source":{"subagent":{"thread_spawn":{"parent_thread_id":%q}}}}}`, child, parent, parent),
+		taskStarted("2026-10-01T00:00:00Z", turn),
+		fmt.Sprintf(`{"timestamp":"2026-10-01T00:00:00Z","type":"turn_context","payload":{"turn_id":%q,"model":"gpt-5.6-sol","cwd":"/p"}}`, turn),
+		`{"timestamp":"2026-10-01T00:00:00Z","type":"compacted","payload":{"message":""}}`,
+		snapshot("2026-10-01T00:00:00Z", first, first.sub(earlier)),
+		snapshot("2026-10-01T00:00:00Z", final, final.sub(first)),
+	}}
+	home, dir, st := newRollbackHome(t)
+	writeRollout(t, dir, file, len(file.lines))
+	scanOnce(t, st, home, false)
+	checkOutcome(t, "compacted subagent", outcome(t, st), final.total)
+	scanOnce(t, st, home, true)
+	checkOutcome(t, "compacted subagent rebuilt", outcome(t, st), final.total)
 }
 
 // A ledger read before session points existed has none for its files. The
