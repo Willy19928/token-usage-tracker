@@ -198,7 +198,7 @@ All three ledgers are append-only: once usage is recorded it stays, even after t
 - The service binds to `127.0.0.1` only and refuses any other address; mutating API calls must come from a local origin.
 - The page loads no external resources and ships a strict Content-Security-Policy.
 - No usage data is uploaded, no telemetry.
-- By default the only network access is **Software updates**: it asks GitHub for the latest version number every 6 hours (you can turn this off under Software updates in the page footer). A new version is downloaded only when you choose Download and update; it is verified against the release SHA256SUMS, the program, all three ledgers and the limit records are backed up, and the previous version is restored automatically if the new one does not start.
+- By default the only network access is **Software updates**: it asks GitHub for the latest version number every 6 hours (you can turn this off under Software updates in the page footer). A new version is downloaded only when you choose Download and update; it is verified against the release SHA256SUMS, the program, all three ledgers and the limit records are backed up, and the previous version is restored automatically if the new one does not start. Downloads go to the system temporary folder by default and are deleted once installed; once the update has finished (the new version is running, or the old one was restored) the program and ledger backups are deleted too, and a failed update keeps them for manual recovery.
 - Anthropic's official endpoints are contacted only after you turn on Claude Code limits (see "Limits"); while it is off, nothing is sent.
 - Antigravity limits are read only from Antigravity's own language server on `127.0.0.1`; nothing goes off the machine.
 - Prices are built into the program; nothing is fetched at runtime.
@@ -273,6 +273,6 @@ The page sources are in `internal/web/static/` and are embedded into the binary 
 
 ## Credits and license
 
-This project is a modified version of zJay's [token-usage](https://github.com/zJay26/token-usage).
+This project is a modified version of zJay's [codex-usage](https://github.com/zJay26/codex-usage).
 
 Released under the GNU General Public License v3.0, see [LICENSE](LICENSE). The upstream project's MIT notice and dependency licenses are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

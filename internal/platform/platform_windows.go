@@ -59,7 +59,7 @@ func InstallService(executable, stateDir string) (ServiceResult, error) {
 func system32(name string) string {
 	root := os.Getenv("SystemRoot")
 	if root == "" {
-		root = `C:Windows`
+		root = `C:\Windows`
 	}
 	return filepath.Join(root, "System32", name)
 }

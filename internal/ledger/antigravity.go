@@ -548,6 +548,48 @@ func normalizeAGModel(name string) string {
 	return "antigravity-" + slug
 }
 
+// Orchestrator is a picker option, not a model: a planner (Carbon or Argon,
+// named in the option) plans and reviews, and Gemini 4 Hydrogen implements.
+// Its steps report the role in their model id, so each step is priced as the
+// model that did it.
+var agOrchestratorOption = regexp.MustCompile(`(?i)^\s*orchestrator\s*\(\s*(carbon|argon)\s*\)\s*$`)
+
+// agOrchestratorPlanner returns the planner model of an Orchestrator option.
+func agOrchestratorPlanner(label string) string {
+	if m := agOrchestratorOption.FindStringSubmatch(label); m != nil {
+		return "gemini-4-" + strings.ToLower(m[1])
+	}
+	return ""
+}
+
+// agStepModel returns the model of one step while Orchestrator is selected.
+func agStepModel(model, planner, reported string) string {
+	if planner == "" {
+		return model
+	}
+	switch {
+	case agWorkerStep(reported):
+		return "gemini-4-hydrogen"
+	case strings.Contains(strings.ToLower(reported), "orchestrator"), model == "antigravity-orchestrator":
+		return planner
+	}
+	return model
+}
+
+// agNextPlanner tracks whether Orchestrator is selected. Its implementation
+// steps carry their own label ("Gemini Flash"); only a choice of another
+// model ends it.
+func agNextPlanner(planner, selected, reported string) string {
+	if selected == "" || agWorkerStep(reported) {
+		return planner
+	}
+	return agOrchestratorPlanner(selected)
+}
+
+func agWorkerStep(reported string) bool {
+	return strings.Contains(strings.ToLower(reported), "worker")
+}
+
 func isCJK(r rune) bool {
 	return (r >= 0x3400 && r <= 0x4dbf) || (r >= 0x4e00 && r <= 0x9fff) || (r >= 0x3040 && r <= 0x30ff)
 }
@@ -651,7 +693,7 @@ func parseAntigravityTranscript(ctx context.Context, file string, data []byte) [
 	session := hashText(agSessionName(file))
 
 	var out []AntigravityRecord
-	currentModel := ""
+	currentModel, planner := "", ""
 	var contextTokens, previousContext int64
 	lastPlannerModel, hasLastPlanner := "", false
 	for i := range lines {
@@ -687,6 +729,11 @@ func parseAntigravityTranscript(ctx context.Context, file string, data []byte) [
 		if turn != nil && turn.SelectedLabel != "" {
 			selectedName = turn.SelectedLabel
 		}
+		reportedModel := ""
+		if turn != nil {
+			reportedModel = turn.Model
+		}
+		planner = agNextPlanner(planner, selectedName, reportedModel)
 		if selectedName != "" || (turn != nil && turn.Model != "") {
 			name := selectedName
 			if name == "" {
@@ -707,6 +754,11 @@ func parseAntigravityTranscript(ctx context.Context, file string, data []byte) [
 			continue
 		}
 		modelName := currentModel
+		if turn != nil {
+			modelName = agStepModel(modelName, planner, turn.Model)
+		} else {
+			modelName = agStepModel(modelName, planner, "")
+		}
 		if modelName == "" {
 			modelName = "antigravity-unknown"
 		}

@@ -140,3 +140,10 @@ func waitForWindowsProcessExit(t *testing.T, command *exec.Cmd) {
 		t.Fatal("helper process did not exit")
 	}
 }
+
+func TestSystem32FallsBackToWindowsFolder(t *testing.T) {
+	t.Setenv("SystemRoot", "")
+	if got, want := system32("whoami.exe"), `C:\Windows\System32\whoami.exe`; got != want {
+		t.Fatalf("system32 = %q, want %q", got, want)
+	}
+}

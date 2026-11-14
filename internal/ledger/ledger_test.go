@@ -328,3 +328,83 @@ func TestSelectFiltersBySourceAndDate(t *testing.T) {
 		t.Fatalf("summary = %s", encoded)
 	}
 }
+
+func TestAntigravityOrchestratorPricesEachStepAsItsModel(t *testing.T) {
+	p := openAntigravityFixture(t,
+		"{\"type\":\"USER_SETTINGS_CHANGE\",\"content\":\"The user changed setting `Model Selection` from A to Orchestrator (Argon).\",\"created_at\":\"2026-11-14T00:00:00Z\"}",
+		`{"type":"USER_INPUT","content":"hi","created_at":"2026-11-14T00:00:01Z"}`,
+		`{"type":"PLANNER_RESPONSE","step_index":2,"created_at":"2026-11-14T00:00:02Z","input_tokens":1000,"output_tokens":100,"content":"ok"}`,
+	)
+	entries := p.Entries()
+	if len(entries) != 1 || entries[0].Model != "gemini-4-argon" || !entries[0].Price.Priced {
+		t.Fatalf("entries = %+v", entries)
+	}
+	for _, c := range []struct{ model, planner, reported, want string }{
+		{"antigravity-orchestrator", "gemini-4-argon", "gemini-pro-orchestrator-g1-pro", "gemini-4-argon"},
+		{"antigravity-orchestrator", "gemini-4-carbon", "gemini-pro-orchestrator-g1-pro", "gemini-4-carbon"},
+		{"gemini-flash", "gemini-4-argon", "gemini-flash-worker-agy", "gemini-4-hydrogen"},
+		{"gemini-flash", "", "gemini-flash-worker-agy", "gemini-flash"},
+		{"gemini-4-argon", "", "gemini-4-argon-s", "gemini-4-argon"},
+	} {
+		if got := agStepModel(c.model, c.planner, c.reported); got != c.want {
+			t.Errorf("agStepModel(%q, %q, %q) = %q, want %q", c.model, c.planner, c.reported, got, c.want)
+		}
+	}
+	// The steps of one Orchestrator conversation, as Antigravity records them.
+	planner := ""
+	for _, step := range []struct{ selected, reported, want string }{
+		{"Orchestrator (Argon)", "gemini-pro-orchestrator-g1-pro", "gemini-4-argon"},
+		{"Gemini Flash", "gemini-flash-worker-agy", "gemini-4-hydrogen"},
+		{"Gemini Flash", "gemini-flash-worker-agy", "gemini-4-hydrogen"},
+		{"Orchestrator (Argon)", "gemini-pro-orchestrator-g1-pro", "gemini-4-argon"},
+		{"Gemini 4 Argon (High)", "gemini-4-argon-s", "gemini-4-argon"},
+		{"Gemini 3.8 Flash (High)", "gemini-3.8-flash-n", "gemini-3.8-flash"},
+	} {
+		planner = agNextPlanner(planner, step.selected, step.reported)
+		if got := canonicalModel(agStepModel(normalizeAGModel(step.selected), planner, step.reported)); got != canonicalModel(step.want) {
+			t.Errorf("step %+v: model %q", step, got)
+		}
+	}
+	for label, want := range map[string]string{"Orchestrator (Carbon)": "gemini-4-carbon", "Orchestrator (Argon)": "gemini-4-argon", "Gemini 4 Argon (High)": ""} {
+		if got := agOrchestratorPlanner(label); got != want {
+			t.Errorf("agOrchestratorPlanner(%q) = %q, want %q", label, got, want)
+		}
+	}
+}
+
+// Sonnet 5.5 launched on 2026-09-28, before Haiku 5.5.
+func TestClaudeSonnet55PricedFromLaunch(t *testing.T) {
+	launch, before := mustDate("2026-09-28T00:00:00Z"), mustDate("2026-09-27T00:00:00Z")
+	found := map[bool]bool{}
+	for _, card := range claudeRateCards {
+		if card.Model == "claude-sonnet-5-5" {
+			found[!card.ValidFrom.After(launch)] = true
+			if !card.ValidFrom.After(before) {
+				t.Fatalf("Sonnet 5.5 priced before launch: %v", card.ValidFrom)
+			}
+		}
+	}
+	if !found[true] {
+		t.Fatal("Sonnet 5.5 not priced from its launch day")
+	}
+}
+
+// Some entries report zeros at the top level and the request's usage only in
+// its "message" iteration.
+func TestClaudeZeroTopLevelUsesMessageIterations(t *testing.T) {
+	line := `{"type":"assistant","sessionId":"s1","uuid":"u-z","requestId":"req_z","timestamp":"2026-10-01T00:00:00Z",` +
+		`"message":{"id":"msg_z","model":"claude-opus-5-5","usage":{"input_tokens":0,"cache_read_input_tokens":0,` +
+		`"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":100},` +
+		`"output_tokens":0,"output_tokens_details":{"thinking_tokens":20},"service_tier":"standard",` +
+		`"iterations":[{"type":"message","input_tokens":10,"output_tokens":50,"cache_read_input_tokens":1000,` +
+		`"cache_creation_input_tokens":100,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":100}}]}}}`
+	p := openClaudeFixture(t, line)
+	entries := p.Entries()
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d", len(entries))
+	}
+	want := model.TokenUsage{Input: 1110, CachedInput: 1000, CacheWriteInput: 100, Output: 50, ReasoningOutput: 20, Total: 1160}
+	if entries[0].Usage != want || !entries[0].Price.Priced {
+		t.Fatalf("entry = %+v, want usage %+v", entries[0], want)
+	}
+}

@@ -15,7 +15,7 @@
 
 ### 來源
 
-讀取 `CODEX_HOME` 下 `sessions/` 與 `archived_sessions/` 的 JSONL。Codex 狀態資料庫只用來找出檔案路徑並補充標題、專案等資訊，資料庫裡的 `tokens_used` 不計入總量。
+讀取 `CODEX_HOME` 下 `sessions/` 與 `archived_sessions/` 的 JSONL。Codex 狀態資料庫只用來找出檔案路徑並補充標題、專案等資訊，資料庫裡的 `tokens_used` 不計入總量。`tokens_used` 是對話目前的累計計數，不含壓縮對話的請求（Codex 以獨立的請求紀錄寫出，不併入累計），也不含復原或還原檢查點前已送出、之後被撤回的請求，所以本程式的對話合計可能比它高。
 
 Codex 會把較舊的對話壓縮成同名的 `.jsonl.zst` 並刪除原檔。程式把壓縮檔當成原本那個 JSONL，從上次讀到的位置接著讀解壓後的內容，所以服務停止期間才寫入、隨後被壓縮的用量也會補記，已記錄的部分不會重複計算。同名的 `.jsonl` 仍在時以 `.jsonl` 為準。
 
@@ -70,7 +70,7 @@ Codex 會把較舊的對話壓縮成同名的 `.jsonl.zst` 並刪除原檔。程
 
 - 每個請求以「message ID＋request ID」識別；沒有 request ID 時改用「對話＋message ID」。同一請求的多個內容區塊、跨檔複製只計一次；同一請求出現多個版本時取各分類都不小於前者的完整值。
 - 子代理（sidechain）檔案中重播的父對話訊息不重複計算；已存在的這類舊紀錄會標記排除並保留稽核紀錄。
-- `advisor_message` 迭代以自己的模型另外記一筆，一般迭代不重複加總。
+- `advisor_message` 迭代以自己的模型另外記一筆，一般迭代不重複加總。最上層的 Token 計數全為 0、實際用量只記在一般迭代（`message`）時，改用這些迭代的加總。
 - 模型以當次選擇為準（有 `requestedModel` 時），版本寫法統一，例如 `claude-opus-5.5` 與 `claude-opus-5-5` 視為同一模型。
 
 ### Token 分類
@@ -95,7 +95,7 @@ Codex 會把較舊的對話壓縮成同名的 `.jsonl.zst` 並刪除原檔。程
 | claude-sonnet-4-6 | 推出時起 | 3 | 15 | 0.30 | 3.75 | 6 |
 | claude-haiku-4-5 | 推出時起 | 1 | 5 | 0.10 | 1.25 | 2 |
 | claude-opus-5-5 | 2026-09-22 | 4 | 20 | 0.20 | 5 | 8 |
-| claude-sonnet-5-5 | 2026-10-07 | 2 | 10 | 0.10 | 2.50 | 4 |
+| claude-sonnet-5-5 | 2026-09-28 | 2 | 10 | 0.10 | 2.50 | 4 |
 | claude-haiku-5-5（單次輸入 ≤ 100,000） | 2026-10-07 | 0.10 | 0.50 | 0.01 | 0.125 | 0.20 |
 | claude-haiku-5-5（單次輸入 > 100,000） | 2026-10-07 | 0.50 | 2.50 | 0.05 | 0.625 | 1 |
 
@@ -125,6 +125,8 @@ Codex 會把較舊的對話壓縮成同名的 `.jsonl.zst` 並刪除原檔。程
 ### 模型歸屬
 
 以當次的模型選擇為準：優先採用資料庫記錄的選擇標籤，其次是 transcript 中「Model Selection」設定變更的時間軸。名稱統一成小寫並去掉思考等級，例如「Gemini 3.1 Pro (High)」記為 `gemini-3.1-pro`。
+
+「Orchestrator (Carbon)」與「Orchestrator (Argon)」不是單一模型：括號裡的模型負責規劃與審查，Gemini 4 Hydrogen 負責實作。每一步依資料庫記錄的模型身分歸屬，模型 ID 含 `orchestrator` 的步驟記為規劃模型（`gemini-4-carbon` 或 `gemini-4-argon`），含 `worker` 的步驟記為 `gemini-4-hydrogen`，各自依該模型的費率計價。
 
 ### 計價
 

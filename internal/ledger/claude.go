@@ -97,7 +97,7 @@ var claudeRateCards = []claudeRate{
 	{Model: "claude-sonnet-4-6", ValidFrom: claudeLaunchRate, Input: 3, Output: 15, CacheRead: .3, CacheWrite: 3.75, Write1h: 6},
 	{Model: "claude-haiku-4-5", ValidFrom: claudeLaunchRate, Input: 1, Output: 5, CacheRead: .1, CacheWrite: 1.25, Write1h: 2},
 	{Model: "claude-opus-5-5", ValidFrom: mustDate("2026-09-22T00:00:00Z"), Input: 4, Output: 20, CacheRead: .2, CacheWrite: 5, Write1h: 8},
-	{Model: "claude-sonnet-5-5", ValidFrom: mustDate("2026-10-07T00:00:00Z"), Input: 2, Output: 10, CacheRead: .1, CacheWrite: 2.5, Write1h: 4},
+	{Model: "claude-sonnet-5-5", ValidFrom: mustDate("2026-09-28T00:00:00Z"), Input: 2, Output: 10, CacheRead: .1, CacheWrite: 2.5, Write1h: 4},
 	{Model: "claude-haiku-5-5", ValidFrom: mustDate("2026-10-07T00:00:00Z"), Input: .1, Output: .5, CacheRead: .01, CacheWrite: .125, Write1h: .2},
 	{Model: "claude-haiku-5-5", ValidFrom: mustDate("2026-10-07T00:00:00Z"), MinPromptTokens: 100001, Input: .5, Output: 2.5, CacheRead: .05, CacheWrite: .625, Write1h: 1},
 }
@@ -154,6 +154,69 @@ func OpenClaude(directory string, roots []string) (*Provider, error) {
 }
 
 var errClaudeInvalid = errors.New("invalid Claude usage")
+
+var claudeUsageCounts = []string{"input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"}
+
+// claudeMessageUsage returns the usage of the message itself. Some entries
+// carry zeros in the top-level counters while the request's real usage is in
+// its "message" iterations; those are summed in place of the zeros. Every
+// other field (speed, tier, thinking, tools) stays as recorded.
+func claudeMessageUsage(u jsValue) jsValue {
+	for _, key := range claudeUsageCounts {
+		if v, ok := u.get(key); ok && v.kind == 'f' && v.f != 0 {
+			return u
+		}
+	}
+	iterations, ok := u.get("iterations")
+	if !ok || iterations.kind != 'a' {
+		return u
+	}
+	sums := map[string]float64{}
+	found := false
+	for _, item := range iterations.items {
+		if kind, _ := item.str("type"); kind != "message" {
+			continue
+		}
+		for _, key := range claudeUsageCounts {
+			if v, ok := item.get(key); ok && v.kind == 'f' {
+				sums[key] += v.f
+				found = found || v.f != 0
+			}
+		}
+		if split, ok := item.get("cache_creation"); ok && split.kind == 'o' {
+			for _, key := range []string{"ephemeral_1h_input_tokens", "ephemeral_5m_input_tokens"} {
+				if v, ok := split.get(key); ok && v.kind == 'f' {
+					sums[key] += v.f
+				}
+			}
+		}
+	}
+	if !found {
+		return u
+	}
+	out := jsValue{kind: 'o', values: map[string]*jsValue{}}
+	set := func(key string, value jsValue) {
+		if _, exists := out.values[key]; !exists {
+			out.keys = append(out.keys, key)
+		}
+		v := value
+		out.values[key] = &v
+	}
+	for _, key := range u.keys {
+		set(key, *u.values[key])
+	}
+	for _, key := range claudeUsageCounts {
+		set(key, jsValue{kind: 'f', f: sums[key]})
+	}
+	split := jsValue{kind: 'o', values: map[string]*jsValue{}}
+	for _, key := range []string{"ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens"} {
+		v := jsValue{kind: 'f', f: sums[key]}
+		split.keys = append(split.keys, key)
+		split.values[key] = &v
+	}
+	set("cache_creation", split)
+	return out
+}
 
 func claudeCount(v jsValue, ok bool) (int64, error) {
 	if !ok || v.kind != 'f' {
@@ -338,7 +401,7 @@ func parseClaudeEntry(e jsValue, file string, line int64) ([]ClaudeRecord, error
 	}
 	modelValue, _ := m.get("model")
 	modelName := orString("unknown", modelValue)
-	first, err := build(mainUsage, modelName, "")
+	first, err := build(claudeMessageUsage(mainUsage), modelName, "")
 	if err != nil {
 		return nil, err
 	}

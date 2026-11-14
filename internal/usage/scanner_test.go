@@ -1100,3 +1100,61 @@ func tokenLine(timestamp, total, last string) string {
 	return fmt.Sprintf(`{"timestamp":%q,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":%s,"last_token_usage":%s}}}`,
 		timestamp, total, last)
 }
+
+// Switching Codex between model providers rewrites the provider name in every
+// rollout's first line, in place. The counters are unchanged, so scanning
+// continues, including usage appended after the rewrite.
+func TestProviderRewriteInHeaderKeepsScanning(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, ".codex")
+	dir := filepath.Join(home, "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	header := func(provider string) string {
+		return `{"timestamp":"2026-07-30T01:00:00Z","type":"session_meta","payload":{"id":"provider","cwd":"/p","originator":"codex_cli_rs","model_provider":"` + provider + `"}}` + "\n"
+	}
+	body := tokenLine("2026-07-30T01:00:01Z", usage(700, 0, 0, 200, 0, 900), usage(700, 0, 0, 200, 0, 900)) + "\n"
+	more := tokenLine("2026-07-30T01:00:02Z", usage(1000, 0, 0, 300, 0, 1300), usage(300, 0, 0, 100, 0, 400)) + "\n"
+	path := filepath.Join(dir, "provider.jsonl")
+	if err := os.WriteFile(path, []byte(header("openai")+body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := store.Open(filepath.Join(root, "usage.sqlite"))
+	defer st.Close()
+	scanner := &Scanner{Store: st}
+	if _, err := scanner.Scan(context.Background(), []string{home}, false); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(path)
+	// Same size, new time.
+	if err := os.WriteFile(path, []byte(header("magpie")+body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changed := info.ModTime().Add(2 * time.Second)
+	if err := os.Chtimes(path, changed, changed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scanner.Scan(context.Background(), []string{home}, false); err != nil {
+		t.Fatalf("provider rewrite requested a rebuild: %v", err)
+	}
+	// Rewritten back and grown in the same interval.
+	if err := os.WriteFile(path, []byte(header("openai")+body+more), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scanner.Scan(context.Background(), []string{home}, false); err != nil {
+		t.Fatalf("provider rewrite with new usage requested a rebuild: %v", err)
+	}
+	summary, _ := st.Summary(context.Background(), model.Filter{})
+	if summary.GrandTotal != 1300 {
+		t.Fatalf("usage after provider rewrites = %d, want 1300", summary.GrandTotal)
+	}
+	// A rewrite that moves the scanned boundary is still a rebuild decision.
+	if err := os.WriteFile(path, []byte(header("other-provider")+body+more), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var rebuild *RebuildRequiredError
+	if _, err := scanner.Scan(context.Background(), []string{home}, false); !errors.As(err, &rebuild) {
+		t.Fatalf("shifted rewrite did not request a rebuild: %v", err)
+	}
+}

@@ -252,6 +252,9 @@ func (s *Scanner) scanFileTransaction(ctx context.Context, home, path string, me
 					Detail: "檔案大小未變但修改時間變化"}
 			}
 			cursor.ModifiedNanos = info.ModTime().UnixNano()
+			if cursor.PrefixHash, err = hashFilePrefix(path, minInt64(info.Size(), 4096)); err != nil {
+				return result, err
+			}
 			if err := s.Store.PutCursor(ctx, cursor); err != nil {
 				return result, err
 			}
@@ -269,8 +272,15 @@ func (s *Scanner) scanFileTransaction(ctx context.Context, home, path string, me
 			return result, hashErr
 		}
 		if cursor.PrefixHash != "" && prefix != cursor.PrefixHash {
-			return result, &RebuildRequiredError{Kind: "rollout_rewritten", Path: path,
-				Detail: "檔案已在原有掃描範圍內重寫"}
+			same, verifyErr := countersUnchanged(path, cursor)
+			if verifyErr != nil {
+				return result, verifyErr
+			}
+			if !same {
+				return result, &RebuildRequiredError{Kind: "rollout_rewritten", Path: path,
+					Detail: "檔案已在原有掃描範圍內重寫"}
+			}
+			cursor.PrefixHash = prefix
 		}
 		if pendingForkReplay {
 			inspection, inspectErr := s.inspectRollout(ctx, path)
@@ -1064,17 +1074,22 @@ func validTokenUsage(usage model.TokenUsage) bool {
 }
 
 // metadataOnlyTouch reports whether a fully scanned file whose size is
-// unchanged still has the recorded prefix and ends on the recorded cumulative
-// counters. Event identities derive from those counters, so a match means the
-// existing ledger already reflects the file.
+// unchanged still yields the counters already recorded.
 func metadataOnlyTouch(path string, cursor store.FileCursor) (bool, error) {
 	if cursor.Offset != cursor.Size || cursor.PrefixHash == "" {
 		return false, nil
 	}
-	prefix, err := hashFilePrefix(path, minInt64(cursor.Size, 4096))
-	if err != nil || prefix != cursor.PrefixHash {
-		return false, err
-	}
+	return countersUnchanged(path, cursor)
+}
+
+// countersUnchanged reports whether the part of a file already scanned still
+// yields the recorded counters although its bytes changed. Codex rewrites
+// metadata in place, for example the model provider in every rollout's first
+// line when the provider is switched; such a rewrite keeps the session, keeps
+// the recorded offset on a line boundary and leaves every token_count as it
+// was. Event identities derive from those counters, so a match means the
+// ledger already reflects the file. Anything else stays a rebuild decision.
+func countersUnchanged(path string, cursor store.FileCursor) (bool, error) {
 	file, err := openRollout(path)
 	if err != nil {
 		return false, err
@@ -1082,8 +1097,22 @@ func metadataOnlyTouch(path string, cursor store.FileCursor) (bool, error) {
 	defer file.Close()
 	reader := bufio.NewReaderSize(io.LimitReader(file, cursor.Offset), 64<<10)
 	var last model.TokenUsage
+	var read int64
+	first := true
 	for {
 		line, readErr := reader.ReadBytes('\n')
+		read += int64(len(line))
+		if first && len(line) > 0 {
+			first = false
+			var env envelope
+			var meta struct {
+				ID string `json:"id"`
+			}
+			if json.Unmarshal(line, &env) == nil && env.Type == "session_meta" &&
+				json.Unmarshal(env.Payload, &meta) == nil && cursor.SessionID != "" && meta.ID != cursor.SessionID {
+				return false, nil
+			}
+		}
 		if bytes.Contains(line, []byte(`"token_count"`)) {
 			var env envelope
 			var event eventPayload
@@ -1102,7 +1131,25 @@ func metadataOnlyTouch(path string, cursor store.FileCursor) (bool, error) {
 			return false, readErr
 		}
 	}
+	// The recorded offset must still end a line of the rewritten file.
+	if read != cursor.Offset || (read > 0 && !endsLine(path, read)) {
+		return false, nil
+	}
 	return last.Equal(cursor.Cumulative), nil
+}
+
+func endsLine(path string, offset int64) bool {
+	file, err := openRollout(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	if _, err := io.CopyN(io.Discard, file, offset-1); err != nil {
+		return false
+	}
+	var b [1]byte
+	_, err = io.ReadFull(file, b[:])
+	return err == nil && b[0] == '\n'
 }
 
 func hashFilePrefix(path string, length int64) (string, error) {

@@ -113,8 +113,10 @@ func TestLimitsAPIFoldsSharedQuotasAndTogglesClaude(t *testing.T) {
 		t.Fatalf("after showing b: %v %v", counts, hidden)
 	}
 	hide("b", true)
+	// Newer than the removal, and later than the chart range below however
+	// slowly the test runs.
 	if err := st.Observe(ctx, limits.Observation{Provider: limits.Antigravity, Account: "b", Key: "gemini-5h", Label: "gemini-5h",
-		WindowMinutes: 300, UsedPercent: 3, ResetsAt: reset, ObservedAt: time.Now().Add(time.Second)}); err != nil {
+		WindowMinutes: 300, UsedPercent: 3, ResetsAt: reset, ObservedAt: time.Now().Add(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
 	if counts, hidden := current(); counts["b"] != 2 || hidden["b"] {

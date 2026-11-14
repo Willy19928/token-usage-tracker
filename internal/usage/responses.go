@@ -128,6 +128,17 @@ func (s *Scanner) observeLegacyResponseTurn(ctx context.Context, info tokenInfo,
 			}
 		}
 	}
+	// The records counted this request; remember its state so that an undo
+	// back to it is recognized as already counted.
+	rawCurrent := info.Total.usage()
+	if err := s.recordCounted(ctx, cursor, cursor.Cumulative, rawCurrent, last); err != nil {
+		return err
+	}
+	if base, ok := requestOf(rawCurrent, last); ok && sessionScoped(cursor) {
+		if err := s.Store.RecordSessionPoint(ctx, cursor.SessionID, base, model.TokenUsage{}); err != nil {
+			return err
+		}
+	}
 	cursor.Cumulative = info.Total.withMissingSubsets(cursor.Cumulative)
 	cursor.LastEventID = ""
 	result.Duplicates++

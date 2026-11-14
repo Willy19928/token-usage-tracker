@@ -34,7 +34,7 @@ import (
 )
 
 var (
-	Version   = "1.1.3"
+	Version   = "1.1.4"
 	Commit    = "dev"
 	BuildDate = "unknown"
 )
@@ -399,6 +399,9 @@ func (c CLI) serve(args []string, daemon bool) (err error) {
 	go state.limits.Run(ctx)
 	updates := newUpdater(state.paths)
 	state.server.Updates = updates
+	if daemon {
+		go updates.RemoveLegacyDownloads()
+	}
 	go updates.Run(ctx)
 	go func() {
 		result, scanErr := state.scanner.Scan(ctx, state.homes, false)

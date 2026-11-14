@@ -179,6 +179,7 @@ func (m *Manager) Run(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
+		m.removeFinishedUpdate()
 		s := m.Status()
 		if s.AutoCheck && !s.Checking && !busy(s.Phase) && (s.CheckedAt.IsZero() || time.Since(s.CheckedAt) >= 6*time.Hour) {
 			_ = m.Check(ctx)
@@ -233,6 +234,7 @@ func (m *Manager) Install(version string) error {
 func (m *Manager) prepare(ctx context.Context, r Release) error {
 	m.mu.Lock()
 	downloadDir := m.status.DownloadDir
+	temporary := samePath(downloadDir, m.status.DefaultDownloadDir)
 	m.mu.Unlock()
 	if err := ensureDownloadDirectory(downloadDir); err != nil {
 		return err
@@ -244,7 +246,10 @@ func (m *Manager) prepare(ctx context.Context, r Release) error {
 	downloadPath := filepath.Join(downloadRun, m.asset)
 	digest, err := download(ctx, m.client, r, m.asset, downloadPath)
 	if err != nil {
-		_ = os.Remove(downloadRun)
+		removeTree(downloadRun)
+		if temporary {
+			removeEmptyDir(downloadDir)
+		}
 		return err
 	}
 	m.mu.Lock()
@@ -258,6 +263,7 @@ func (m *Manager) prepare(ctx context.Context, r Release) error {
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return err
 	}
+	removeFinishedRuns(root)
 	dir, err := os.MkdirTemp(root, "run-")
 	if err != nil {
 		return err
@@ -268,6 +274,17 @@ func (m *Manager) prepare(ctx context.Context, r Release) error {
 	}
 	path := filepath.Join(dir, name)
 	err = stageDownload(downloadPath, path, digest)
+	if temporary {
+		removeTree(downloadRun)
+		removeEmptyDir(downloadDir)
+		m.mu.Lock()
+		m.status.LastDownload = ""
+		saveErr := m.save()
+		m.mu.Unlock()
+		if err == nil {
+			err = saveErr
+		}
+	}
 	if err != nil {
 		return err
 	}
