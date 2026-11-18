@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	CatalogAsOf = "2026-10-07"
+	CatalogAsOf = "2026-11-18"
 	Currency    = "USD"
 	Basis       = "current_standard_api_text_token_prices"
 )
@@ -51,6 +51,20 @@ var builtInCatalog = []CatalogEntry{
 		Model: "codex-auto-review", DisplayName: "Codex Auto-review",
 		InputUSDPerMillion: "0.00", CachedInputUSDPerMillion: "0.00",
 		CacheWriteInputUSDPerMillion: "0.00", OutputUSDPerMillion: "0.00",
+	},
+	{
+		Model: "gpt-6.2-astra", DisplayName: "GPT-6.2 Astra",
+		SnapshotPatterns:   []string{"gpt-6.2-astra-YYYY-MM-DD"},
+		InputUSDPerMillion: "8.00", CachedInputUSDPerMillion: "0.40",
+		CacheWriteInputUSDPerMillion: "10.00", OutputUSDPerMillion: "40.00",
+		Source: "https://developers.openai.com/api/docs/models/gpt-6.2-astra",
+	},
+	{
+		Model: "gpt-6.2-sol", DisplayName: "GPT-6.2 Sol",
+		SnapshotPatterns:   []string{"gpt-6.2-sol-YYYY-MM-DD"},
+		InputUSDPerMillion: "2.00", CachedInputUSDPerMillion: "0.10",
+		CacheWriteInputUSDPerMillion: "2.50", OutputUSDPerMillion: "10.00",
+		Source: "https://developers.openai.com/api/docs/models/gpt-6.2-sol",
 	},
 	{
 		Model: "gpt-6.1-sol", DisplayName: "GPT-6.1 Sol",
@@ -146,6 +160,25 @@ func Catalog() []CatalogEntry {
 	for i := range out {
 		out[i].Aliases = append([]string(nil), out[i].Aliases...)
 		out[i].SnapshotPatterns = append([]string(nil), out[i].SnapshotPatterns...)
+	}
+	return out
+}
+
+// WithoutBuiltInOverrides drops saved overrides for models that now have a
+// built-in official price. A model without a price could be given one locally;
+// once a later version prices it, the official price applies instead, and the
+// saved entry must not stop the configuration from loading.
+func WithoutBuiltInOverrides(input map[string]Override) map[string]Override {
+	var out map[string]Override
+	for name, override := range input {
+		model := strings.ToLower(strings.TrimSpace(name))
+		if _, ok := resolveBuiltIn(model); ok && model != "codex-auto-review" {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]Override, len(input))
+		}
+		out[name] = override
 	}
 	return out
 }

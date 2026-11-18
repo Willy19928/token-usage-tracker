@@ -1158,3 +1158,56 @@ func TestProviderRewriteInHeaderKeepsScanning(t *testing.T) {
 		t.Fatalf("shifted rewrite did not request a rebuild: %v", err)
 	}
 }
+
+// A fork whose replay boundary has not appeared yet has counted nothing, so a
+// later change to only its modification time is not a rewrite. An earlier
+// version reported one on every scan; the next scan clears that warning.
+func TestPendingForkTimestampTouchIsNotRewrite(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, ".codex")
+	sessionDir := filepath.Join(home, "sessions", "2026", "09", "06")
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(sessionDir, "rollout-pending-fork.jsonl")
+	content := strings.Join([]string{
+		`{"timestamp":"2026-09-06T02:00:00Z","type":"session_meta","payload":{"id":"01900000-9000-7000-8000-000000000002","forked_from_id":"01900000-9000-7000-8000-000000000001","cwd":"/project","originator":"codex_cli_rs"}}`,
+		`{"timestamp":"2026-09-06T02:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[]}}`,
+		`{"timestamp":"2026-09-06T02:00:02Z","type":"event_msg","payload":{"type":"turn_aborted"}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(root, "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	scanner := &Scanner{Store: st}
+	if _, err := scanner.Scan(context.Background(), []string{home}, false); err != nil {
+		t.Fatal(err)
+	}
+	cursor, exists, err := st.GetCursor(context.Background(), path)
+	if err != nil || !exists || cursor.Offset != 0 || cursor.Size != int64(len(content)) {
+		t.Fatalf("expected a pending fork cursor: %+v exists=%v err=%v", cursor, exists, err)
+	}
+	if err := st.AddWarning(context.Background(), "rollout_rewritten", path, "historical warning"); err != nil {
+		t.Fatal(err)
+	}
+	touched := time.Unix(0, cursor.ModifiedNanos).Add(1500 * time.Millisecond)
+	if err := os.Chtimes(path, touched, touched); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := scanner.Scan(context.Background(), []string{home}, false); err != nil {
+			t.Fatalf("scan %d: %v", i, err)
+		}
+		if warnings, err := st.Warnings(context.Background(), 10); err != nil || len(warnings) != 0 {
+			t.Fatalf("scan %d: warnings=%+v err=%v", i, warnings, err)
+		}
+	}
+	cursor, _, err = st.GetCursor(context.Background(), path)
+	if err != nil || cursor.ModifiedNanos != touched.UnixNano() {
+		t.Fatalf("cursor did not take the new time: %+v err=%v", cursor, err)
+	}
+}

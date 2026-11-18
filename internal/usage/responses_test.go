@@ -167,3 +167,36 @@ func TestResponseAttributionDateAndMode(t *testing.T) {
 		t.Fatalf("%s %v", b, err)
 	}
 }
+
+// A turn that opens with a compaction writes the compaction's request record
+// and token_count before its own turn_context. The token_count belongs to the
+// new turn named by that record, not to the turn before it.
+func TestResponseCompactionBeforeTurnContextIsMatched(t *testing.T) {
+	for _, incremental := range []bool{false, true} {
+		t.Run(fmt.Sprint(incremental), func(t *testing.T) {
+			st, home, path := accountingFixture(t)
+			parts := []string{
+				accountingMeta + accountingTurn("first") + responseN("scope-test", "first", "first-a", 40, 40) + accountingToken(40, 40) +
+					responseN("scope-test", "first", "first-b", 60, 100) + accountingToken(100, 60),
+				`{"type":"event_msg","payload":{"type":"task_started","turn_id":"second"}}` + "\n" +
+					responseN("scope-test", "second", "second-compact", 25, 25) + accountingToken(125, 25),
+				accountingTurn("second") + responseN("scope-test", "second", "second-a", 15, 40) + accountingToken(140, 15),
+			}
+			for _, part := range parts {
+				appendAccounting(t, path, part)
+				if incremental {
+					scanResponses(t, st, home)
+				}
+			}
+			scanResponses(t, st, home)
+			accountingTotal(t, st, 140)
+			if ws, _ := st.Warnings(context.Background(), 100); len(ws) != 0 {
+				t.Fatal(ws)
+			}
+			u, err := st.TurnUsage(context.Background(), "scope-test", "second")
+			if err != nil || u.Total != 40 {
+				t.Fatalf("%+v %v", u, err)
+			}
+		})
+	}
+}

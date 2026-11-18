@@ -39,6 +39,8 @@ func TestResolveGPT6SolAndLunaPricing(t *testing.T) {
 	}{
 		{"gpt-6-sol", 2000, 200, 2500, 10000},
 		{"gpt-6.1-sol", 2000, 100, 2500, 10000},
+		{"gpt-6.2-sol", 2000, 100, 2500, 10000},
+		{"gpt-6.2-astra", 8000, 400, 10000, 40000},
 		{"gpt-6-luna", 100, 10, 125, 500},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -165,7 +167,7 @@ func TestNormalizeOverridesRejectsInvalidValues(t *testing.T) {
 }
 
 func TestModelMatchingDoesNotGuessFamilies(t *testing.T) {
-	for _, name := range []string{"gpt-6", "gpt-6-sol-preview", "gpt-6-luna-turbo", "gpt-6-luna-2026-02-30", "gpt-5.6-turbo", "gpt-5.4-pro", "gpt-6.1-sol-preview", "codex-auto-review-2026-10-07", "internal-review", ""} {
+	for _, name := range []string{"gpt-6", "gpt-6-sol-preview", "gpt-6-luna-turbo", "gpt-6-luna-2026-02-30", "gpt-5.6-turbo", "gpt-5.4-pro", "gpt-6.1-sol-preview", "gpt-6.2", "gpt-6.2-astra-preview", "codex-auto-review-2026-10-07", "internal-review", ""} {
 		if _, ok, err := Resolve(name, nil); err != nil || ok {
 			t.Fatalf("model %q should remain unpriced, ok=%v err=%v", name, ok, err)
 		}

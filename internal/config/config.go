@@ -216,7 +216,7 @@ func Load(paths Paths) (Config, error) {
 		cfg.ScanIntervalSeconds = 600
 	}
 	cfg.ExtraCodexHomes = cleanHomes(cfg.ExtraCodexHomes)
-	cfg.PricingOverrides, err = pricing.NormalizeOverrides(cfg.PricingOverrides)
+	cfg.PricingOverrides, err = pricing.NormalizeOverrides(pricing.WithoutBuiltInOverrides(cfg.PricingOverrides))
 	if err != nil {
 		return Config{}, fmt.Errorf("無效 pricing_overrides: %w", err)
 	}

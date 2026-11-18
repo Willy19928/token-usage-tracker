@@ -105,3 +105,40 @@ func TestLoadRejectsInvalidPricingOverride(t *testing.T) {
 		t.Fatal("expected invalid pricing override to be rejected")
 	}
 }
+
+// A model priced locally before a later version added its official price must
+// not stop the configuration from loading. The official price applies; other
+// overrides stay, and saving an override for a built-in model is still refused.
+func TestLoadDropsOverridesForModelsThatGainedBuiltInPrices(t *testing.T) {
+	stateDir := t.TempDir()
+	paths := Paths{StateDir: stateDir, ConfigPath: filepath.Join(stateDir, "config.json")}
+	custom := `{"input_usd_per_million":"1","cached_input_usd_per_million":"0.1","cache_write_input_usd_per_million":"1.25","output_usd_per_million":"5"}`
+	data := `{
+		"listen_address":"127.0.0.1",
+		"port":43189,
+		"pricing_overrides":{
+			"GPT-6.2-Sol":` + custom + `,
+			"gpt-6.2-astra-2026-11-12":{"alias_of":"gpt-6-astra"},
+			"internal":` + custom + `,
+			"internal-review":{"alias_of":"gpt-6.2-sol"}
+		}
+	}`
+	if err := os.WriteFile(paths.ConfigPath, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.PricingOverrides) != 2 || cfg.PricingOverrides["internal"].InputUSDPerMillion != "1" ||
+		cfg.PricingOverrides["internal-review"].AliasOf != "gpt-6.2-sol" {
+		t.Fatalf("overrides=%+v", cfg.PricingOverrides)
+	}
+	rate, ok, err := pricing.Resolve("gpt-6.2-sol", cfg.PricingOverrides)
+	if err != nil || !ok || rate.Custom || rate.InputNanoPerToken != 2000 {
+		t.Fatalf("official price must apply: rate=%+v ok=%v err=%v", rate, ok, err)
+	}
+	if err := Save(paths, Config{Port: 43189, PricingOverrides: map[string]pricing.Override{"gpt-6.2-sol": {AliasOf: "gpt-6-sol"}}}); err == nil {
+		t.Fatal("a new override for a built-in model must still be refused")
+	}
+}

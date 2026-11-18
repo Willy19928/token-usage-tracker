@@ -239,10 +239,12 @@ func (s *Scanner) scanFileTransaction(ctx context.Context, home, path string, me
 		case cursor.Offset > info.Size() || cursor.Size > info.Size():
 			return result, &RebuildRequiredError{Kind: "rollout_truncated", Path: path,
 				Detail: fmt.Sprintf("檔案從 %d 縮短到 %d", cursor.Size, info.Size())}
-		case cursor.Size == info.Size() && cursor.ModifiedNanos != 0 && !sameTime:
+		case cursor.Size == info.Size() && cursor.ModifiedNanos != 0 && !sameTime && !pendingForkReplay:
 			// Backup, sync and security tools sometimes rewrite only the
 			// timestamp. Accept that when the content still yields the exact
 			// counters already recorded; anything else stays a rebuild decision.
+			// A pending fork has counted nothing yet and is inspected again
+			// from the start below, so a new time alone needs no decision.
 			touched, verifyErr := metadataOnlyTouch(path, cursor)
 			if verifyErr != nil {
 				return result, verifyErr
@@ -301,7 +303,7 @@ func (s *Scanner) scanFileTransaction(ctx context.Context, home, path string, me
 				if err := s.Store.PutCursor(ctx, cursor); err != nil {
 					return result, err
 				}
-				return result, nil
+				return result, s.Store.ClearResolvedFileWarnings(ctx, path)
 			}
 		}
 	}

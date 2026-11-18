@@ -38,9 +38,10 @@ func (s *Scanner) processResponse(ctx context.Context, env envelope, path, home 
 	if err != nil {
 		return &recordError{err}
 	}
-	if cursor.TurnID == "" {
-		cursor.TurnID = record.TurnID
-	}
+	// The record names the turn it belongs to. A turn that opens with a
+	// compaction writes this record and its token_count before its own
+	// turn_context, so the record is the first sign of the new turn.
+	cursor.TurnID = record.TurnID
 	before, err := s.Store.TurnUsage(ctx, record.ThreadID, record.TurnID)
 	if err != nil {
 		return err

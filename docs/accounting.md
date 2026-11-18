@@ -42,9 +42,9 @@ Codex 會把較舊的對話壓縮成同名的 `.jsonl.zst` 並刪除原檔。程
 ### 計價
 
 - 使用內建的 OpenAI Standard 文字價格表（USD／每 100 萬 Token），Cached Input 與 Cache Write 從 Input 扣除後分別計價，Reasoning 已包含在 Output 中。
-- 明確標記為 Fast 的用量，費用按 Codex 額度倍率折算：GPT-6.1 Sol、GPT-6 Astra／Sol／Luna、GPT-5.6 系列與 GPT-5.5 為 2.5 倍，GPT-5.4 為 2 倍。沒有已確認倍率的模型會標為未定價。Token 數本身不乘倍率。
+- 明確標記為 Fast 的用量，費用按 Codex 額度倍率折算：GPT-6.1 Sol、GPT-6 Astra／Sol／Luna、GPT-5.6 系列與 GPT-5.5 為 2.5 倍，GPT-6.2 Astra／Sol 與 GPT-5.4 為 2 倍。沒有已確認倍率的模型會標為未定價。Token 數本身不乘倍率。
 - `codex-auto-review` 預設以零元計算，Token 照常統計；可以在「定價設定」覆寫。
-- 可在「定價設定」把內部模型指定為某個內建模型的別名，或填入自訂單價。設定存在 `config.json` 的 `pricing_overrides`：
+- 可在「定價設定」把內部模型指定為某個內建模型的別名，或填入自訂單價。內建模型不能覆寫；以前替尚未定價的模型填的自訂單價，在新版加入該模型的官方價格後會被略過，改用官方價格。設定存在 `config.json` 的 `pricing_overrides`：
 
 ```json
 {
