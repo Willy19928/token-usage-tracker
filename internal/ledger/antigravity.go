@@ -61,7 +61,12 @@ type AntigravityRecord struct {
 	Session            string          `json:"session"`
 	AccountingRevision int64           `json:"accountingRevision"`
 	RecoveryEvidence   json.RawMessage `json:"recoveryEvidence,omitempty"`
+	// Source is agSourceDatabase for a step read from its conversation
+	// database alone; it is empty for one read from its transcript.
+	Source string `json:"source,omitempty"`
 }
+
+const agSourceDatabase = "database"
 
 func (r AntigravityRecord) key() string {
 	if r.StepIndex != nil {
@@ -90,11 +95,14 @@ func OpenAntigravity(directory, geminiHome string) (*Provider, error) {
 
 // ---- discovery ----
 
-func antigravityBrainDirs(geminiHome string) []string {
+// antigravityRoots are the folders of the Antigravity installs. Each keeps a
+// "brain" folder of transcripts and a "conversations" folder of databases,
+// both named by conversation ID.
+func antigravityRoots(geminiHome string) []string {
 	return []string{
-		filepath.Join(geminiHome, "antigravity", "brain"),
-		filepath.Join(geminiHome, "antigravity-ide", "brain"),
-		filepath.Join(geminiHome, "antigravity-cli", "brain"),
+		filepath.Join(geminiHome, "antigravity"),
+		filepath.Join(geminiHome, "antigravity-ide"),
+		filepath.Join(geminiHome, "antigravity-cli"),
 	}
 }
 
@@ -103,14 +111,27 @@ func pathWithin(file, root string) bool {
 	return err == nil && relative != "" && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
 }
 
-func listAntigravityTranscripts(geminiHome string, known []string) ([]string, bool) {
-	var files []string
+// agSource is one conversation. Path names it in the ledger state: its
+// transcript, or its database when it has no transcript (a conversation run
+// by another agent, or one whose transcript is gone).
+type agSource struct {
+	Path       string
+	Transcript string
+	DB         string
+}
+
+// listAntigravitySources returns every conversation and every source file
+// that exists. complete is false when a folder that held a tracked
+// conversation could not be listed.
+func listAntigravitySources(geminiHome string, known []string) ([]agSource, map[string]bool, bool) {
+	var sources []agSource
+	live := map[string]bool{}
 	complete := true
-	for _, dir := range antigravityBrainDirs(geminiHome) {
+	readDir := func(dir string) []fs.DirEntry {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
-			// A missing optional install directory is authoritative only when it
-			// never contained a tracked session.
+			// A missing optional folder is authoritative only when it never
+			// contained a tracked conversation.
 			if !errors.Is(err, fs.ErrNotExist) {
 				complete = false
 			}
@@ -120,14 +141,18 @@ func listAntigravityTranscripts(geminiHome string, known []string) ([]string, bo
 					break
 				}
 			}
-			continue
 		}
-		var found []string
-		for _, entry := range entries {
+		return entries
+	}
+	for _, root := range antigravityRoots(geminiHome) {
+		conversations := filepath.Join(root, "conversations")
+		withTranscript := map[string]bool{}
+		var found []agSource
+		for _, entry := range readDir(filepath.Join(root, "brain")) {
 			if !entry.IsDir() {
 				continue
 			}
-			transcript := filepath.Join(dir, entry.Name(), ".system_generated", "logs", "transcript.jsonl")
+			transcript := filepath.Join(root, "brain", entry.Name(), ".system_generated", "logs", "transcript.jsonl")
 			st, err := os.Stat(transcript)
 			if err != nil {
 				if !errors.Is(err, fs.ErrNotExist) {
@@ -136,33 +161,71 @@ func listAntigravityTranscripts(geminiHome string, known []string) ([]string, bo
 				continue
 			}
 			if st.Mode().IsRegular() {
-				found = append(found, transcript)
+				withTranscript[entry.Name()] = true
+				live[transcript] = true
+				found = append(found, agSource{Path: transcript, Transcript: transcript, DB: filepath.Join(conversations, entry.Name()+".db")})
 			}
 		}
-		sort.Strings(found)
-		files = append(files, found...)
+		for _, entry := range readDir(conversations) {
+			id, isDB := strings.CutSuffix(entry.Name(), ".db")
+			if !isDB || id == "" || strings.HasPrefix(id, ".") || !entry.Type().IsRegular() {
+				continue
+			}
+			db := filepath.Join(conversations, entry.Name())
+			live[db] = true
+			if !withTranscript[id] {
+				found = append(found, agSource{Path: db, DB: db})
+			}
+		}
+		sort.Slice(found, func(i, j int) bool { return found[i].Path < found[j].Path })
+		sources = append(sources, found...)
 	}
-	return files, complete
+	return sources, live, complete
 }
 
-var (
-	agBrainSession = regexp.MustCompile(`[/\\]brain[/\\]([^/\\]+)`)
-	agDBPath       = regexp.MustCompile(`^(.*)[/\\]brain[/\\]([^/\\]+)[/\\]\.system_generated[/\\]logs[/\\]transcript.*\.jsonl$`)
-)
+var agConversationID = regexp.MustCompile(`[/\\]brain[/\\]([^/\\]+)|[/\\]conversations[/\\]([^/\\]+)\.db$`)
 
+// agSessionName is the conversation ID in a transcript or database path.
 func agSessionName(file string) string {
-	if m := agBrainSession.FindStringSubmatch(file); m != nil {
-		return m[1]
+	if m := agConversationID.FindStringSubmatch(file); m != nil {
+		return m[1] + m[2]
 	}
 	return hashText(file)
 }
 
-func agConversationDB(transcript string) string {
-	m := agDBPath.FindStringSubmatch(transcript)
-	if m == nil {
-		return ""
+// agFingerprint is what a conversation's records were last read from. A
+// conversation whose files all still match is not read again.
+type agFingerprint struct {
+	Parser     int      `json:"parser"`
+	Transcript [2]int64 `json:"transcript"`
+	DB         [2]int64 `json:"db"`
+	WAL        [2]int64 `json:"wal"`
+}
+
+// antigravityParserVersion must change whenever the same files would give
+// different records, so every conversation is read again once.
+const antigravityParserVersion = 1
+
+// fingerprint stats the conversation's files; ok is false when one could not
+// be checked.
+func (s agSource) fingerprint() (agFingerprint, bool) {
+	ok := true
+	stat := func(path string) [2]int64 {
+		if path == "" {
+			return [2]int64{-1, 0}
+		}
+		st, err := os.Stat(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			return [2]int64{-1, 0}
+		}
+		if err != nil {
+			ok = false
+			return [2]int64{}
+		}
+		return [2]int64{st.Size(), st.ModTime().UnixNano()}
 	}
-	return filepath.Join(m[1], "conversations", m[2]+".db")
+	fp := agFingerprint{Parser: antigravityParserVersion, Transcript: stat(s.Transcript), DB: stat(s.DB), WAL: stat(s.DB + "-wal")}
+	return fp, ok
 }
 
 // ---- protobuf metadata ----
@@ -430,25 +493,59 @@ func agGenInfo(buf []byte) (turn agTurn, lastStep int64, hasStep bool, ok bool) 
 	return turn, lastStep, hasStep, true
 }
 
-// readConversationDB returns nil when the database is missing or unreadable, so
-// transcript counters are used instead; an empty map means it was read fine
-// but holds no usage metadata yet.
-func readConversationDB(ctx context.Context, path string) map[int64]agTurn {
+// agConversation is what a conversation database says about its turns.
+type agConversation struct {
+	// Turns holds the usage metadata by step. It is nil when the database is
+	// missing or unreadable, so transcript counters are used instead; an empty
+	// map means it was read fine but holds no usage metadata yet.
+	Turns map[int64]agTurn
+	// Planner lists the planner response steps in order, and Times the time
+	// each one recorded.
+	Planner []int64
+	Times   map[int64]time.Time
+}
+
+// agStepTime reads a step's google.protobuf.Timestamp (field 1 of its
+// metadata).
+func agStepTime(fields []protoField) (time.Time, bool) {
+	value, present, err := messageField(fields, 1)
+	if err != nil || !present {
+		return time.Time{}, false
+	}
+	stamp, err := protoFields(value)
+	if err != nil {
+		return time.Time{}, false
+	}
+	seconds, ok := countField(stamp, 1)
+	if !ok || seconds <= 0 {
+		return time.Time{}, false
+	}
+	nanos, _ := countField(stamp, 2)
+	if nanos >= int64(time.Second) {
+		return time.Time{}, false
+	}
+	return time.Unix(seconds, nanos).UTC(), true
+}
+
+// readConversationDB reads a conversation database. complete is false when
+// the database exists but could not be read in full, so its records may be
+// worse than a later read would give.
+func readConversationDB(ctx context.Context, path string) (conv agConversation, complete bool) {
 	if path == "" {
-		return nil
+		return conv, true
 	}
 	if st, err := os.Stat(path); err != nil || !st.Mode().IsRegular() {
-		return nil
+		return conv, errors.Is(err, fs.ErrNotExist)
 	}
 	db, err := sql.Open("sqlite", sqliteURI(path, "mode=ro&_pragma=busy_timeout(15000)&_pragma=query_only(1)"))
 	if err != nil {
-		return nil
+		return conv, false
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
 	rows, err := db.QueryContext(ctx, `SELECT idx, data FROM gen_metadata ORDER BY idx`)
 	if err != nil {
-		return nil
+		return conv, false
 	}
 	steps := map[int64]agTurn{}
 	for rows.Next() {
@@ -456,7 +553,7 @@ func readConversationDB(ctx context.Context, path string) map[int64]agTurn {
 		var data any
 		if err := rows.Scan(&idx, &data); err != nil {
 			rows.Close()
-			return nil
+			return conv, false
 		}
 		blob, ok := data.([]byte)
 		if !ok {
@@ -470,12 +567,14 @@ func readConversationDB(ctx context.Context, path string) map[int64]agTurn {
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return nil
+		return conv, false
 	}
 	rows.Close()
-	stepRows, err := db.QueryContext(ctx, `SELECT idx, metadata FROM steps WHERE step_type=15`)
+	conv.Turns = steps
+	conv.Times = map[int64]time.Time{}
+	stepRows, err := db.QueryContext(ctx, `SELECT idx, metadata FROM steps WHERE step_type=15 ORDER BY idx`)
 	if err != nil {
-		return steps
+		return conv, false
 	}
 	defer stepRows.Close()
 	for stepRows.Next() {
@@ -484,12 +583,19 @@ func readConversationDB(ctx context.Context, path string) map[int64]agTurn {
 		if err := stepRows.Scan(&idx, &data); err != nil {
 			continue
 		}
+		conv.Planner = append(conv.Planner, idx)
 		blob, ok := data.([]byte)
-		if _, exists := steps[idx]; exists || !ok {
+		if !ok {
 			continue
 		}
 		fields, err := protoFields(blob)
 		if err != nil {
+			continue
+		}
+		if at, ok := agStepTime(fields); ok {
+			conv.Times[idx] = at
+		}
+		if _, exists := steps[idx]; exists {
 			continue
 		}
 		f9, present, err := messageField(fields, 9)
@@ -502,7 +608,7 @@ func readConversationDB(ctx context.Context, path string) map[int64]agTurn {
 		}
 		steps[idx] = agTurn{Usage: usage, UsageSource: "steps-metadata"}
 	}
-	return steps
+	return conv, stepRows.Err() == nil
 }
 
 // ---- transcript ----
@@ -516,8 +622,11 @@ var (
 	agEdgeDashes      = regexp.MustCompile(`^-+|-+$`)
 	agDashRuns        = regexp.MustCompile(`-{2,}`)
 	agFlashTier       = regexp.MustCompile(`^gemini-3\.8-flash-(?:tiered|n)$`)
-	agKnownPrefix     = regexp.MustCompile(`^(gemini|claude|gpt)-`)
-	agProRouteLabel   = regexp.MustCompile(`(?i)^Gemini 3\.1 Pro(?: \((?:High|Medium|Low)\))?$`)
+	// A step that names no choice reports the model ID it was served by, which
+	// may carry a serving variant of the chosen model ("gemini-4-argon-s").
+	agServingVariant = regexp.MustCompile(`^(gemini-\d+(?:\.\d+)?-[a-z]+)-(?:s|trial)$`)
+	agKnownPrefix    = regexp.MustCompile(`^(gemini|claude|gpt)-`)
+	agProRouteLabel  = regexp.MustCompile(`(?i)^Gemini 3\.1 Pro(?: \((?:High|Medium|Low)\))?$`)
 )
 
 func normalizeAGModel(name string) string {
@@ -535,6 +644,9 @@ func normalizeAGModel(name string) string {
 	}
 	if agFlashTier.MatchString(slug) {
 		return "gemini-3.8-flash"
+	}
+	if m := agServingVariant.FindStringSubmatch(slug); m != nil {
+		return m[1]
 	}
 	for _, marker := range []string{"gemini", "claude", "gpt"} {
 		if index := strings.Index(slug, marker); index >= 0 {
@@ -667,9 +779,106 @@ func selectionTimeline(events []jsValue, parsed []bool) []string {
 
 func strPtr(value string) *string { return &value }
 
+// agExactTotals is the usage of one planner response with recorded counts.
+func agExactTotals(u *agUsage) agTotals {
+	t := agTotals{Input: u.Uncached, Cached: u.Cached, CacheCreation: u.CacheCreation, Output: u.TextOutput, Reasoning: u.Reasoning}
+	t.Total = t.Input + t.Cached + t.Output + t.Reasoning + t.CacheCreation
+	t.BillableTotal, t.ConversationCount = t.Total, 1
+	return t
+}
+
+// setTurn copies what the conversation database reported for the step.
+func (r *AntigravityRecord) setTurn(turn *agTurn) {
+	if turn.Usage != nil && turn.Usage.ResponseID != nil && *turn.Usage.ResponseID != "" {
+		r.ResponseID = turn.Usage.ResponseID
+	}
+	if turn.Model != "" {
+		r.ReportedModel = strPtr(turn.Model)
+	}
+	if turn.Usage != nil {
+		r.ModelCode = turn.Usage.ModelCode
+	}
+}
+
+// parseAntigravityConversation reads one conversation: its transcript when it
+// has one, and its database for every planner response the transcript does
+// not hold. Those are a conversation run by another agent, which has no
+// transcript, and the start of a long conversation, which Antigravity trims
+// from the transcript. readFully is false when a file could not be read in
+// full, so a later read may give better records.
+func parseAntigravityConversation(ctx context.Context, source agSource) (records []AntigravityRecord, readFully bool) {
+	conv, readFully := readConversationDB(ctx, source.DB)
+	fromDB := agDatabaseRecords(conv, hashText(agSessionName(source.Path)))
+	if source.Transcript == "" {
+		return fromDB, readFully
+	}
+	data, err := os.ReadFile(source.Transcript)
+	if err != nil {
+		return nil, false
+	}
+	records = parseAntigravityTranscript(source.Transcript, conv, data)
+	covered := make(map[string]bool, len(records))
+	for _, record := range records {
+		covered[record.key()] = true
+	}
+	for _, record := range fromDB {
+		if !covered[record.key()] {
+			records = append(records, record)
+		}
+	}
+	return records, readFully
+}
+
+// agDatabaseRecords reads a conversation from its database alone, emitting one
+// record per planner response with recorded usage. The model is followed as
+// the transcript would follow it: the choice each step names, and the
+// Orchestrator roles.
+func agDatabaseRecords(conv agConversation, session string) []AntigravityRecord {
+	var out []AntigravityRecord
+	currentModel, planner := "", ""
+	for _, idx := range conv.Planner {
+		turn, found := conv.Turns[idx]
+		if !found {
+			continue
+		}
+		planner = agNextPlanner(planner, turn.SelectedLabel, turn.Model)
+		name := turn.SelectedLabel
+		if name == "" {
+			name = turn.Model
+		}
+		if normalized := normalizeAGModel(name); normalized != "" {
+			currentModel = normalized
+		}
+		at, hasTime := conv.Times[idx]
+		if turn.Usage == nil || !hasTime {
+			continue
+		}
+		totals := agExactTotals(turn.Usage)
+		if totals.Total == 0 {
+			continue
+		}
+		modelName := agStepModel(currentModel, planner, turn.Model)
+		if modelName == "" {
+			modelName = "antigravity-unknown"
+		}
+		step := idx
+		record := AntigravityRecord{
+			Line: idx + 1, StepIndex: &step, Timestamp: jsISOTime(at), Model: modelName,
+			Precision: "recorded", TokenSource: turn.UsageSource, OutputSplit: turn.Usage.OutputSplit,
+			Totals: totals, Session: session, AccountingRevision: antigravityAccountingRevision, Source: agSourceDatabase,
+		}
+		if turn.SelectedLabel != "" {
+			record.SelectedModel = strPtr(turn.SelectedLabel)
+		}
+		record.setTurn(&turn)
+		out = append(out, record)
+	}
+	return out
+}
+
 // parseAntigravityTranscript walks one transcript from the start, emitting one
 // record per billed planner response.
-func parseAntigravityTranscript(ctx context.Context, file string, data []byte) []AntigravityRecord {
+func parseAntigravityTranscript(file string, conv agConversation, data []byte) []AntigravityRecord {
 	raw := string(data)
 	if jsTrim(raw) == "" {
 		return nil
@@ -688,7 +897,7 @@ func parseAntigravityTranscript(ctx context.Context, file string, data []byte) [
 			events[i], parsed[i] = value, true
 		}
 	}
-	steps := readConversationDB(ctx, agConversationDB(file))
+	steps := conv.Turns
 	selections := selectionTimeline(events, parsed)
 	session := hashText(agSessionName(file))
 
@@ -773,11 +982,7 @@ func parseAntigravityTranscript(ctx context.Context, file string, data []byte) [
 		billed := false
 		if kind == "PLANNER_RESPONSE" {
 			if exact != nil {
-				delta.Input, delta.Cached, delta.Reasoning = exact.Uncached, exact.Cached, exact.Reasoning
-				delta.Output = exact.TextOutput
-				delta.CacheCreation = exact.CacheCreation
-				delta.Total = delta.Input + delta.Cached + delta.Output + delta.Reasoning + delta.CacheCreation
-				delta.BillableTotal, delta.ConversationCount = delta.Total, 1
+				delta = agExactTotals(exact)
 				billed = delta.Total > 0
 				if dbContext > 0 {
 					contextTokens = dbContext
@@ -824,15 +1029,7 @@ func parseAntigravityTranscript(ctx context.Context, file string, data []byte) [
 			record.SelectedModel = strPtr(selectedName)
 		}
 		if turn != nil {
-			if turn.Usage != nil && turn.Usage.ResponseID != nil && *turn.Usage.ResponseID != "" {
-				record.ResponseID = turn.Usage.ResponseID
-			}
-			if turn.Model != "" {
-				record.ReportedModel = strPtr(turn.Model)
-			}
-			if turn.Usage != nil {
-				record.ModelCode = turn.Usage.ModelCode
-			}
+			record.setTurn(turn)
 		}
 		if exact != nil {
 			record.Precision, record.OutputSplit = "recorded", exact.OutputSplit
@@ -879,6 +1076,7 @@ func (v jsValue) safeIntSelf() (int64, bool) {
 
 type agScan struct {
 	FilesProcessed        int      `json:"filesProcessed"`
+	UnchangedSources      int      `json:"unchangedSources"`
 	Observations          int      `json:"observations"`
 	CorrectedRecords      int      `json:"correctedRecords"`
 	AccountingRevision    int      `json:"accountingRevision"`
@@ -907,11 +1105,12 @@ func scanAntigravity(ctx context.Context, db *ledgerDB, geminiHome string) (agSc
 		}
 		sort.Strings(known)
 	}
-	files, complete := listAntigravityTranscripts(geminiHome, known)
-	live := map[string]bool{}
-	for _, file := range files {
-		live[file] = true
+	sources, live, complete := listAntigravitySources(geminiHome, known)
+	var fingerprints map[string]agFingerprint
+	if _, err := db.state(ctx, "source-fingerprints", &fingerprints); err != nil {
+		return agScan{}, err
 	}
+	nextFingerprints := map[string]agFingerprint{}
 	var missingSessions []string
 	missing := 0
 	for _, file := range known {
@@ -937,13 +1136,22 @@ func scanAntigravity(ctx context.Context, db *ledgerDB, geminiHome string) (agSc
 	defer tx.Rollback()
 	now := time.Now()
 	stamp := jsISOTime(now)
-	observations, corrected := 0, 0
-	for _, file := range files {
-		data, err := os.ReadFile(file)
-		if err != nil {
+	observations, corrected, processed, unchanged := 0, 0, 0, 0
+	for _, source := range sources {
+		// Files are checked before they are read, so a change made while
+		// reading is seen by the next scan.
+		fingerprint, checked := source.fingerprint()
+		if checked && fingerprints[source.Path] == fingerprint {
+			nextFingerprints[source.Path] = fingerprint
+			unchanged++
 			continue
 		}
-		for _, record := range parseAntigravityTranscript(ctx, file, data) {
+		records, readFully := parseAntigravityConversation(ctx, source)
+		processed++
+		if checked && readFully {
+			nextFingerprints[source.Path] = fingerprint
+		}
+		for _, record := range records {
 			id := record.key()
 			next, err := marshalJS(record)
 			if err != nil {
@@ -956,6 +1164,11 @@ func scanAntigravity(ctx context.Context, db *ledgerDB, geminiHome string) (agSc
 				}
 				// Never replace a richer exact split with transcript-only or estimated data.
 				if prior.Precision == "recorded" && record.Precision != "recorded" {
+					continue
+				}
+				// A step read from its transcript keeps the model the transcript
+				// showed when the transcript is later gone.
+				if record.Source == agSourceDatabase && prior.Source != agSourceDatabase {
 					continue
 				}
 				if prior.AccountingRevision >= 3 && (prior.TokenSource == "gen-metadata" || prior.TokenSource == "steps-metadata") && record.TokenSource == "transcript-counters" {
@@ -991,12 +1204,18 @@ func scanAntigravity(ctx context.Context, db *ledgerDB, geminiHome string) (agSc
 		missingSessions = []string{}
 	}
 	scan := agScan{
-		FilesProcessed: len(files), Observations: observations, CorrectedRecords: corrected,
-		AccountingRevision: antigravityAccountingRevision, SourceFiles: len(files), InventoryComplete: complete,
+		FilesProcessed: processed, UnchangedSources: unchanged, Observations: observations, CorrectedRecords: corrected,
+		AccountingRevision: antigravityAccountingRevision, SourceFiles: len(sources), InventoryComplete: complete,
 		MissingSources: missing, MissingSourceSessions: missingSessions,
 		LastScan: stamp, NextScan: jsISOTime(now.Add(time.Hour)),
 	}
-	if err := putState(ctx, tx, "known-sources", uniqueStrings(append(known, files...))); err != nil {
+	for _, source := range sources {
+		known = append(known, source.Path)
+	}
+	if err := putState(ctx, tx, "known-sources", uniqueStrings(known)); err != nil {
+		return agScan{}, err
+	}
+	if err := putState(ctx, tx, "source-fingerprints", nextFingerprints); err != nil {
 		return agScan{}, err
 	}
 	if err := putState(ctx, tx, "scan", scan); err != nil {

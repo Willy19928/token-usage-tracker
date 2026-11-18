@@ -109,7 +109,12 @@ Codex 會把較舊的對話壓縮成同名的 `.jsonl.zst` 並刪除原檔。程
 
 ### 來源
 
-掃描 `~/.gemini/antigravity`、`antigravity-ide`、`antigravity-cli` 三個資料夾的 `brain/<對話>/.system_generated/logs/transcript.jsonl`，並唯讀開啟對應的 `conversations/<對話>.db`。`ANTIGRAVITY_TRACKER_HOME` 可改為其他資料夾。
+掃描 `~/.gemini/antigravity`、`antigravity-ide`、`antigravity-cli` 三個資料夾的 `brain/<對話>/.system_generated/logs/transcript.jsonl`，並唯讀開啟 `conversations/<對話>.db`。`ANTIGRAVITY_TRACKER_HOME` 可改為其他資料夾。
+
+- 沒有 transcript 的對話（例如由其他代理執行的對話）只讀資料庫。
+- Antigravity 會刪掉長對話 transcript 的開頭；transcript 裡已經沒有的步驟，改從資料庫補上。
+- 已經從 transcript 記下的步驟，之後即使 transcript 不見了，也保留當時 transcript 所顯示的模型，不會被資料庫的結果取代。
+- 對話的 transcript、資料庫與 `-wal` 檔的大小和修改時間都沒變時，掃描會略過該對話。
 
 ### 用量來源的優先順序
 
@@ -124,7 +129,7 @@ Codex 會把較舊的對話壓縮成同名的 `.jsonl.zst` 並刪除原檔。程
 
 ### 模型歸屬
 
-以當次的模型選擇為準：優先採用資料庫記錄的選擇標籤，其次是 transcript 中「Model Selection」設定變更的時間軸。名稱統一成小寫並去掉思考等級，例如「Gemini 3.1 Pro (High)」記為 `gemini-3.1-pro`。
+以當次的模型選擇為準：優先採用資料庫記錄的選擇標籤，其次是 transcript 中「Model Selection」設定變更的時間軸。兩者都沒有時，採用資料庫記錄的服務模型 ID；連 ID 也沒有，就沿用同一對話前一步的模型。名稱統一成小寫並去掉思考等級，例如「Gemini 3.1 Pro (High)」記為 `gemini-3.1-pro`；服務模型 ID 的 `-s`、`-trial` 後綴也會去掉，例如 `gemini-4-argon-s` 記為 `gemini-4-argon`。
 
 「Orchestrator (Carbon)」與「Orchestrator (Argon)」不是單一模型：括號裡的模型負責規劃與審查，Gemini 4 Hydrogen 負責實作。每一步依資料庫記錄的模型身分歸屬，模型 ID 含 `orchestrator` 的步驟記為規劃模型（`gemini-4-carbon` 或 `gemini-4-argon`），含 `worker` 的步驟記為 `gemini-4-hydrogen`，各自依該模型的費率計價。
 

@@ -274,6 +274,9 @@ func TestModelNormalization(t *testing.T) {
 		"Claude Opus 5.5 Thinking":  "claude-opus-5.5",
 		"Gemini 4 Hydrogen (XHigh)": "gemini-4-hydrogen",
 		"Gemini 4 Carbon (High)":    "gemini-4-carbon",
+		"gemini-4-argon-s":          "gemini-4-argon",
+		"gemini-4-argon-trial":      "gemini-4-argon",
+		"gemini-pro-default":        "gemini-pro-default",
 		"Mystery":                   "antigravity-mystery",
 	} {
 		if got := normalizeAGModel(in); got != want {

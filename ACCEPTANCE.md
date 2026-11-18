@@ -1,5 +1,12 @@
 # 驗收紀錄
 
+## v1.1.6（2026-11-18）
+
+- Antigravity：也掃描 `conversations/*.db`。沒有 transcript 的對話（例如由其他代理執行的對話）改從資料庫記帳；Antigravity 刪掉長對話 transcript 開頭後，transcript 裡已經沒有的步驟也從資料庫補上，不再只靠在刪除前掃到。已經從 transcript 記下的步驟保留 transcript 當時顯示的模型，不會被資料庫的結果取代。
+- Antigravity：只有服務模型 ID 時，去掉 `-s`、`-trial` 後綴再對應模型，例如 `gemini-4-argon-s` 記為 `gemini-4-argon`。
+- Antigravity：記下每個對話的 transcript、資料庫與 `-wal` 檔的大小和修改時間，都沒變時掃描略過該對話；檔案沒能完整讀取時不記，下次重讀。升級後第一次掃描仍會完整讀取。
+- `go test ./...`、`go vet ./...`、`gofmt -l .` 通過。
+
 ## v1.1.5（2026-11-18）
 
 - 新增 GPT-6.2 Astra（$8／$40，快取讀取 $0.40、快取寫入 $10）與 GPT-6.2 Sol（$2／$10，快取讀取 $0.10、快取寫入 $2.50）的官方 Standard API 費率；Codex Fast 額度倍率為 2 倍。
