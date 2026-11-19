@@ -131,7 +131,7 @@ Codex 會把較舊的對話壓縮成同名的 `.jsonl.zst` 並刪除原檔。程
 
 以當次的模型選擇為準：優先採用資料庫記錄的選擇標籤，其次是 transcript 中「Model Selection」設定變更的時間軸。兩者都沒有時，採用資料庫記錄的服務模型 ID；連 ID 也沒有，就沿用同一對話前一步的模型。名稱統一成小寫並去掉思考等級，例如「Gemini 3.1 Pro (High)」記為 `gemini-3.1-pro`；服務模型 ID 的 `-s`、`-trial` 後綴也會去掉，例如 `gemini-4-argon-s` 記為 `gemini-4-argon`。
 
-「Orchestrator (Carbon)」與「Orchestrator (Argon)」不是單一模型：括號裡的模型負責規劃與審查，Gemini 4 Hydrogen 負責實作。每一步依資料庫記錄的模型身分歸屬，模型 ID 含 `orchestrator` 的步驟記為規劃模型（`gemini-4-carbon` 或 `gemini-4-argon`），含 `worker` 的步驟記為 `gemini-4-hydrogen`，各自依該模型的費率計價。
+「Orchestrator (Carbon)」、「Orchestrator (Argon)」與「Orchestrator (Neon)」不是單一模型：括號裡的模型負責規劃與審查，Gemini 4 Hydrogen 負責實作。每一步依資料庫記錄的模型身分歸屬，模型 ID 含 `orchestrator` 的步驟記為規劃模型（`gemini-4-carbon`、`gemini-4-argon` 或 `gemini-4-neon`），含 `worker` 的步驟記為 `gemini-4-hydrogen`，各自依該模型的費率計價。
 
 ### 計價
 
@@ -146,6 +146,7 @@ Codex 會把較舊的對話壓縮成同名的 `.jsonl.zst` 並刪除原檔。程
 | gemini-4-carbon | 2026-11-10 | 2 | 10 | 0.10 | 未確認 |
 | gemini-4-carbon | 2026-12-01 | 4 | 20 | 0.20 | 未確認 |
 | gemini-4-hydrogen | 2026-11-12 | 1.50 | 7.50 | 0.075 | 未確認 |
+| gemini-4-neon | 2026-11-18 | 3 | 15 | 0.15 | 未確認 |
 | gemini-3.8-flash | 2026-09-02 | 0.75 | 3.75 | 0.075 | 未確認 |
 | gemini-3.8-flash | 2027-01-01 | 1.50 | 7.50 | 0.15 | 未確認 |
 | claude-opus-4-6 | 2026-02-05 | 5 | 25 | 0.50 | 6.25 |

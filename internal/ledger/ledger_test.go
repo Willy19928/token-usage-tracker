@@ -368,9 +368,35 @@ func TestAntigravityOrchestratorPricesEachStepAsItsModel(t *testing.T) {
 			t.Errorf("step %+v: model %q", step, got)
 		}
 	}
-	for label, want := range map[string]string{"Orchestrator (Carbon)": "gemini-4-carbon", "Orchestrator (Argon)": "gemini-4-argon", "Gemini 4 Argon (High)": ""} {
+	for label, want := range map[string]string{"Orchestrator (Carbon)": "gemini-4-carbon", "Orchestrator (Argon)": "gemini-4-argon",
+		"Orchestrator (Neon)": "gemini-4-neon", "Gemini 4 Argon (High)": ""} {
 		if got := agOrchestratorPlanner(label); got != want {
 			t.Errorf("agOrchestratorPlanner(%q) = %q, want %q", label, got, want)
+		}
+	}
+}
+
+// Gemini 4 Neon is priced from its launch on 2026-11-18, at every thinking level.
+func TestAntigravityGemini4NeonPricedFromLaunch(t *testing.T) {
+	p := openAntigravityFixture(t,
+		"{\"type\":\"USER_SETTINGS_CHANGE\",\"content\":\"The user changed setting `Model Selection` from A to Gemini 4 Neon (Extra High).\",\"created_at\":\"2026-11-17T00:00:00Z\"}",
+		`{"type":"PLANNER_RESPONSE","step_index":1,"created_at":"2026-11-17T23:00:00Z","input_tokens":1000,"output_tokens":100,"content":"ok"}`,
+		`{"type":"PLANNER_RESPONSE","step_index":2,"created_at":"2026-11-18T01:00:00Z","input_tokens":1000000,"cache_read_tokens":1000000,"output_tokens":1000000,"content":"ok"}`,
+	)
+	entries := p.Entries()
+	if len(entries) != 2 || entries[0].Model != "gemini-4-neon" || entries[1].Model != "gemini-4-neon" {
+		t.Fatalf("entries = %+v", entries)
+	}
+	if entries[0].Price.Priced || entries[0].Price.ReasonKind != "unverified_rate" {
+		t.Fatalf("before launch = %+v", entries[0].Price)
+	}
+	price := entries[1].Price
+	if !price.Priced || price.RegularNano != usdNano(1000000, 3) || price.CachedNano != usdNano(1000000, .15) || price.OutputNano != usdNano(1000000, 15) {
+		t.Fatalf("after launch = %+v", price)
+	}
+	for _, name := range []string{"Gemini 4 Neon (Low)", "Gemini 4 Neon (XHigh)", "gemini-4-neon-high", "gemini-4-neon-xhigh", "gemini-4-neon-s", "gemini-4-neon-trial"} {
+		if got := normalizeAGModel(name); got != "gemini-4-neon" {
+			t.Errorf("normalizeAGModel(%q) = %q", name, got)
 		}
 	}
 }

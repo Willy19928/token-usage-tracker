@@ -204,7 +204,7 @@ type agFingerprint struct {
 
 // antigravityParserVersion must change whenever the same files would give
 // different records, so every conversation is read again once.
-const antigravityParserVersion = 1
+const antigravityParserVersion = 2
 
 // fingerprint stats the conversation's files; ok is false when one could not
 // be checked.
@@ -660,11 +660,11 @@ func normalizeAGModel(name string) string {
 	return "antigravity-" + slug
 }
 
-// Orchestrator is a picker option, not a model: a planner (Carbon or Argon,
+// Orchestrator is a picker option, not a model: a planner (Carbon, Argon or Neon,
 // named in the option) plans and reviews, and Gemini 4 Hydrogen implements.
 // Its steps report the role in their model id, so each step is priced as the
 // model that did it.
-var agOrchestratorOption = regexp.MustCompile(`(?i)^\s*orchestrator\s*\(\s*(carbon|argon)\s*\)\s*$`)
+var agOrchestratorOption = regexp.MustCompile(`(?i)^\s*orchestrator\s*\(\s*(carbon|argon|neon)\s*\)\s*$`)
 
 // agOrchestratorPlanner returns the planner model of an Orchestrator option.
 func agOrchestratorPlanner(label string) string {
@@ -1235,10 +1235,11 @@ type agRate struct {
 }
 
 // Public Standard API equivalent, never subscription charges.
-// Verified 2026-11-13: https://aistudio.google.com/docs/pricing
+// Verified 2026-11-19: https://aistudio.google.com/docs/pricing
 var agRateCards = map[string][]agRate{
 	"gemini-4-carbon":   {{mustDate("2026-11-10T00:00:00Z"), 2, 10, .1, 0}, {mustDate("2026-12-01T00:00:00Z"), 4, 20, .2, 0}},
 	"gemini-4-hydrogen": {{mustDate("2026-11-12T00:00:00Z"), 1.5, 7.5, .075, 0}},
+	"gemini-4-neon":     {{mustDate("2026-11-18T00:00:00Z"), 3, 15, .15, 0}},
 	"claude-opus-4-6":   {{mustDate("2026-02-05T00:00:00Z"), 5, 25, .5, 6.25}},
 	"claude-opus-5-5":   {{mustDate("2026-09-22T00:00:00Z"), 4, 20, .2, 5}},
 	"claude-sonnet-5-5": {{mustDate("2026-09-28T00:00:00Z"), 2, 10, .1, 2.5}},

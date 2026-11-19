@@ -1,5 +1,12 @@
 # 驗收紀錄
 
+## v1.1.7（2026-11-19）
+
+- Antigravity：新增 Gemini 4 Neon 的官方 Standard API 費率（$3／$15，快取讀取 $0.15），自推出日 2026-11-18 起計價；各思考等級（Low、Medium、High、XHigh）都記為 `gemini-4-neon`。
+- Antigravity：「Orchestrator (Neon)」不再記為未定價的單一模型；規劃步驟記為 Gemini 4 Neon，實作步驟記為 Gemini 4 Hydrogen，各自依該模型費率計價。
+- Antigravity：解析規則改變，升級後第一次掃描會把所有對話完整重讀一次，之後恢復略過沒有變動的對話。
+- `go test ./...`、`go vet ./...`、`gofmt -l .` 通過。
+
 ## v1.1.6（2026-11-18）
 
 - Antigravity：也掃描 `conversations/*.db`。沒有 transcript 的對話（例如由其他代理執行的對話）改從資料庫記帳；Antigravity 刪掉長對話 transcript 開頭後，transcript 裡已經沒有的步驟也從資料庫補上，不再只靠在刪除前掃到。已經從 transcript 記下的步驟保留 transcript 當時顯示的模型，不會被資料庫的結果取代。
