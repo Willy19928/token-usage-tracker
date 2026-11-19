@@ -64,15 +64,27 @@ type AntigravityRecord struct {
 	// Source is agSourceDatabase for a step read from its conversation
 	// database alone; it is empty for one read from its transcript.
 	Source string `json:"source,omitempty"`
+	// Superseded is set on a planner response whose step index the
+	// conversation later reused, to the response's own time. Antigravity
+	// reuses step indexes after a rewind to a checkpoint, and the CLI numbers
+	// each turn from zero; the database keeps only the latest use.
+	Superseded string `json:"superseded,omitempty"`
 }
 
 const agSourceDatabase = "database"
 
+// key identifies a step. The latest use of a step index keeps the plain key,
+// so trimming the start of a transcript never changes it; an earlier use is
+// told apart by its time.
 func (r AntigravityRecord) key() string {
+	id := "step-v2:" + r.Session + ":" + strconv.FormatInt(r.Line, 10)
 	if r.StepIndex != nil {
-		return "step-v2:" + r.Session + ":" + strconv.FormatInt(*r.StepIndex, 10)
+		id = "step-v2:" + r.Session + ":" + strconv.FormatInt(*r.StepIndex, 10)
 	}
-	return "step-v2:" + r.Session + ":" + strconv.FormatInt(r.Line, 10)
+	if r.Superseded != "" {
+		id += "@" + r.Superseded
+	}
+	return id
 }
 
 func OpenAntigravity(directory, geminiHome string) (*Provider, error) {
@@ -204,7 +216,7 @@ type agFingerprint struct {
 
 // antigravityParserVersion must change whenever the same files would give
 // different records, so every conversation is read again once.
-const antigravityParserVersion = 2
+const antigravityParserVersion = 3
 
 // fingerprint stats the conversation's files; ok is false when one could not
 // be checked.
@@ -900,6 +912,32 @@ func parseAntigravityTranscript(file string, conv agConversation, data []byte) [
 	steps := conv.Turns
 	selections := selectionTimeline(events, parsed)
 	session := hashText(agSessionName(file))
+	// The line and time of the latest planner response for each step index.
+	// Only that response may take the step's database record.
+	type stepUse struct {
+		line int
+		at   string
+	}
+	latest := map[int64]stepUse{}
+	plannerStep := func(event jsValue) (int64, bool) {
+		if kind, _ := event.str("type"); kind != "PLANNER_RESPONSE" {
+			return 0, false
+		}
+		value, ok := event.get("step_index")
+		if !ok || value.kind != 'f' || math.IsInf(value.f, 0) || math.IsNaN(value.f) {
+			return 0, false
+		}
+		return safeIntFloat(value.f)
+	}
+	for i := range lines {
+		if !parsed[i] {
+			break
+		}
+		if n, ok := plannerStep(events[i]); ok {
+			at, _ := events[i].str("created_at")
+			latest[n] = stepUse{i, at}
+		}
+	}
 
 	var out []AntigravityRecord
 	currentModel, planner := "", ""
@@ -922,12 +960,20 @@ func parseAntigravityTranscript(file string, conv agConversation, data []byte) [
 		eventContext := contextTokensOf(event)
 		var turn *agTurn
 		stepValue, hasStepValue := event.get("step_index")
-		stepFinite := hasStepValue && stepValue.kind == 'f' && !math.IsInf(stepValue.f, 0) && !math.IsNaN(stepValue.f)
-		if kind == "PLANNER_RESPONSE" && steps != nil && stepFinite {
-			if n, ok := safeIntFloat(stepValue.f); ok {
-				if found, ok := steps[n]; ok {
-					turn = &found
+		superseded := ""
+		if n, ok := plannerStep(event); ok {
+			if use := latest[n]; use.line != i {
+				// An earlier use of a reused step index; the database holds
+				// the latest use, not this one.
+				at, _ := event.str("created_at")
+				if at == use.at {
+					// The same response written twice.
+					contextTokens += eventContext
+					continue
 				}
+				superseded = at
+			} else if found, ok := steps[n]; ok {
+				turn = &found
 			}
 		}
 		var dbContext int64
@@ -1018,7 +1064,7 @@ func parseAntigravityTranscript(file string, conv agConversation, data []byte) [
 		record := AntigravityRecord{
 			Line: int64(i + 1), Timestamp: timestamp, Model: modelName,
 			Precision: "estimated", TokenSource: "text-estimate", OutputSplit: "estimated",
-			Totals: delta, Session: session, AccountingRevision: antigravityAccountingRevision,
+			Totals: delta, Session: session, AccountingRevision: antigravityAccountingRevision, Superseded: superseded,
 		}
 		if hasStepValue && stepValue.kind == 'f' {
 			if n, ok := safeIntFloat(stepValue.f); ok {

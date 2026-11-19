@@ -216,3 +216,113 @@ func TestAntigravityRescanSkipsUnchangedConversations(t *testing.T) {
 		t.Fatalf("entries = %d", n)
 	}
 }
+
+func agPlannerLine(step int, at string, input, output int) string {
+	return `{"type":"PLANNER_RESPONSE","step_index":` + strconv.Itoa(step) + `,"created_at":"` + at +
+		`","input_tokens":` + strconv.Itoa(input) + `,"cache_read_tokens":0,"output_tokens":` + strconv.Itoa(output) + `,"content":"ok"}`
+}
+
+// agEntryTotals returns the saved requests' token totals in time order.
+func agEntryTotals(t *testing.T, p *Provider) []int64 {
+	t.Helper()
+	if err := p.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var out []int64
+	for _, e := range p.Entries() {
+		out = append(out, e.Usage.Total)
+	}
+	return out
+}
+
+func agSameTotals(got []int64, want ...int64) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// After a rewind to a checkpoint Antigravity reuses step indexes, and its
+// database keeps only the latest use. Every use is a request of its own.
+func TestAntigravityCountsEveryUseOfAReusedStepIndex(t *testing.T) {
+	home := t.TempDir()
+	db := filepath.Join(home, "antigravity", "conversations", "conv-1.db")
+	at := func(minute int) time.Time { return time.Date(2026, 11, 19, 0, minute, 0, 0, time.UTC) }
+	stamp := func(minute int) string { return at(minute).Format(time.RFC3339) }
+	writeAntigravityDB(t, db,
+		agTestStep{idx: 1, at: at(0), model: "gemini-4-neon", genUsage: agTestUsage(100, 0, 0, 10)},
+		agTestStep{idx: 2, at: at(3), model: "gemini-4-neon", genUsage: agTestUsage(400, 0, 0, 40)},
+		agTestStep{idx: 3, at: at(4), model: "gemini-4-neon", genUsage: agTestUsage(500, 0, 0, 50)},
+	)
+	transcript := agTranscriptPath(home, "conv-1")
+	lines := []string{
+		agPlannerLine(1, stamp(0), 100, 10),
+		agPlannerLine(2, stamp(1), 200, 20),
+		agPlannerLine(3, stamp(2), 300, 30),
+		// Rewound to step 1 and continued.
+		agPlannerLine(2, stamp(3), 400, 40),
+		agPlannerLine(3, stamp(4), 500, 50),
+	}
+	writeLines(t, transcript, lines...)
+	p := openAntigravityHome(t, home)
+	if got := agEntryTotals(t, p); !agSameTotals(got, 110, 220, 330, 440, 550) {
+		t.Fatalf("totals = %v", got)
+	}
+	for _, e := range p.Entries() {
+		if !e.Price.Priced || e.Model != "gemini-4-neon" {
+			t.Fatalf("entry = %+v", e)
+		}
+	}
+
+	// Rewound again: the use of step 3 that was latest becomes an earlier one.
+	if err := os.Remove(db); err != nil {
+		t.Fatal(err)
+	}
+	writeAntigravityDB(t, db,
+		agTestStep{idx: 1, at: at(0), model: "gemini-4-neon", genUsage: agTestUsage(100, 0, 0, 10)},
+		agTestStep{idx: 2, at: at(3), model: "gemini-4-neon", genUsage: agTestUsage(400, 0, 0, 40)},
+		agTestStep{idx: 3, at: at(5), model: "gemini-4-neon", genUsage: agTestUsage(600, 0, 0, 60)},
+	)
+	lines = append(lines, agPlannerLine(3, stamp(5), 600, 60))
+	writeLines(t, transcript, lines...)
+	if got := agEntryTotals(t, p); !agSameTotals(got, 110, 220, 330, 440, 550, 660) {
+		t.Fatalf("totals after a second rewind = %v", got)
+	}
+
+	// Antigravity trims the start of the transcript; the saved requests stay.
+	writeLines(t, transcript, lines[3:]...)
+	if got := agEntryTotals(t, p); !agSameTotals(got, 110, 220, 330, 440, 550, 660) {
+		t.Fatalf("totals once the transcript is trimmed = %v", got)
+	}
+}
+
+// The CLI numbers each turn of a conversation from zero, and its database
+// keeps only the last turn.
+func TestAntigravityCountsEveryCLITurn(t *testing.T) {
+	home := t.TempDir()
+	at := time.Date(2026, 11, 15, 0, 0, 30, 0, time.UTC)
+	writeAntigravityDB(t, filepath.Join(home, "antigravity-cli", "conversations", "conv-1.db"),
+		agTestStep{idx: 1, at: at, model: "gemini-4-neon", genUsage: agTestUsage(1002, 0, 0, 7)})
+	transcript := filepath.Join(home, "antigravity-cli", "brain", "conv-1", ".system_generated", "logs", "transcript.jsonl")
+	writeLines(t, transcript,
+		`{"type":"USER_INPUT","step_index":0,"created_at":"2026-11-15T00:00:00Z","content":"hi"}`,
+		agPlannerLine(1, "2026-11-15T00:00:01Z", 1000, 5),
+		`{"type":"USER_INPUT","step_index":0,"created_at":"2026-11-15T00:00:29Z","content":"hi again"}`,
+		agPlannerLine(1, "2026-11-15T00:00:30Z", 1002, 7),
+		// The same response written twice is one request.
+		agPlannerLine(1, "2026-11-15T00:00:30Z", 1002, 7),
+	)
+	p := openAntigravityHome(t, home)
+	got := agEntryTotals(t, p)
+	if !agSameTotals(got, 1005, 1009) {
+		t.Fatalf("totals = %v", got)
+	}
+	if e := p.Entries()[1]; e.TokenSource != "gen-metadata" || e.Model != "gemini-4-neon" {
+		t.Fatalf("last turn = %+v", e)
+	}
+}
