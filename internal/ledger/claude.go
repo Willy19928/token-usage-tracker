@@ -661,9 +661,12 @@ func uniqueStrings(values []string) []string {
 func priceClaude(r ClaudeRecord, overrides []DatedOverride) Price {
 	at, _ := parseJSTime(r.Timestamp)
 	prompt := r.Totals.Input + r.Totals.Cached + r.Totals.CacheCreation
+	canonical, how := claudeRules.resolve(overrides, r.Model)
+	if how == mapUnpriced {
+		return unpriced("manual_unpriced", "已手動設為未定價")
+	}
 	manual := pickOverride(overrides, r.Model, taipeiDay(at), prompt, claudeCanonical)
 	var card *claudeRate
-	canonical := claudeCanonical(r.Model)
 	for index := range claudeRateCards {
 		c := &claudeRateCards[index]
 		if c.Model != canonical || c.ValidFrom.After(at) || prompt < c.MinPromptTokens {
@@ -744,6 +747,7 @@ func loadClaude(ctx context.Context, db *ledgerDB) ([]Entry, error) {
 				Output: t.Output + t.Reasoning, ReasoningOutput: t.Reasoning, Total: t.Total,
 			},
 			Price: priceClaude(r, overrides),
+			API:   claudeAPI(r.Model),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Timestamp.Before(out[j].Timestamp) })

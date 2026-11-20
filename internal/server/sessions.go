@@ -21,7 +21,7 @@ type sessionQueryKey struct {
 	SinceDate, UntilDate       string
 	Model, Source, AgentType   string
 	Project, SessionID, Search string
-	Confidence                 string
+	Confidence, Billing        string
 	Limit, Offset              int
 	Compact                    bool
 }
@@ -54,7 +54,7 @@ func makeSessionQueryKey(revision uint64, filter model.Filter, limit, offset int
 		SinceDate: filter.SinceDate, UntilDate: filter.UntilDate,
 		Model: filter.Model, Source: filter.Source, AgentType: filter.AgentType,
 		Project: filter.Project, SessionID: filter.SessionID, Search: filter.Search,
-		Confidence: filter.Confidence, Limit: limit, Offset: offset, Compact: compact,
+		Confidence: filter.Confidence, Billing: filter.Billing, Limit: limit, Offset: offset, Compact: compact,
 	}
 }
 

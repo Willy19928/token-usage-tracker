@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"tokenusage/internal/ledger"
 	"tokenusage/internal/limits"
 	"tokenusage/internal/model"
 	"tokenusage/internal/store"
@@ -212,6 +214,15 @@ func TestLimitWindowsCarryTokensAndCost(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// An API request in the account's own minutes never uses its limits.
+	if _, err := data.InsertEvent(ctx, model.UsageEvent{ID: "api", SessionID: "s", TurnID: "tapi", Timestamp: now.Add(-time.Hour),
+		Model: "gpt-6-astra", Usage: model.TokenUsage{Input: 700000, Total: 700000}, Provenance: model.ProvenanceSessionJSONL}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := data.PutTurnPlans(ctx, []store.TurnPlan{{SessionID: "s", TurnID: "tdefault", Plan: "pro"},
+		{SessionID: "s", TurnID: "tpriority", Plan: "pro"}, {SessionID: "s", TurnID: "tapi"}}); err != nil {
+		t.Fatal(err)
+	}
 	// Another account's usage in the same window is not this account's.
 	if _, err := data.InsertEvent(ctx, model.UsageEvent{ID: "other", SessionID: "s2", TurnID: "t", Timestamp: now.Add(-30 * time.Minute),
 		Model: "gpt-6-astra", Usage: model.TokenUsage{Input: 500000, Total: 500000}, Provenance: model.ProvenanceSessionJSONL}, ""); err != nil {
@@ -320,5 +331,65 @@ func TestLimitModelMatcherCountsTheLimitsModels(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("%s %v = %q, want %q", tc.provider, tc.keys, got, tc.want)
 		}
+	}
+}
+
+func TestClaudeLimitWindowsCountOnlySubscriptionRequests(t *testing.T) {
+	data, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer data.Close()
+	ctx := context.Background()
+	now := time.Now()
+	at := now.Add(-time.Hour).UTC().Format(time.RFC3339)
+	line := func(id, modelName string) string {
+		return `{"type":"assistant","sessionId":"s1","uuid":"u-` + id + `","requestId":"req_` + id + `","timestamp":"` + at +
+			`","message":{"id":"msg_` + id + `","model":"` + modelName + `","usage":{"input_tokens":10,"cache_read_input_tokens":1000,` +
+			`"cache_creation_input_tokens":100,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":100},` +
+			`"output_tokens":50,"output_tokens_details":{"thinking_tokens":20}}}}`
+	}
+	home := t.TempDir()
+	dir := filepath.Join(home, "projects", "demo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The relay request maps to the same built-in price but is billed
+	// through an API, not the subscription.
+	content := line("1", "claude-opus-5-5") + "\n" + line("2", "relay/claude-opus-5-5") + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "session-a.jsonl"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	claude, err := ledger.OpenClaude(t.TempDir(), []string{home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer claude.Close()
+	if err := claude.Scan(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(claude.Entries()) != 2 {
+		t.Fatalf("entries = %d", len(claude.Entries()))
+	}
+	st, err := limits.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.Observe(ctx, limits.Observation{Provider: limits.Claude, Account: "a", Key: "five_hour", Label: "five_hour", WindowMinutes: 300,
+		UsedPercent: 10, ResetsAt: now.Add(3 * time.Hour), ObservedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{Store: data, Limits: &limits.Manager{Store: st}, Ledgers: []*ledger.Provider{claude}}
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:43189/api/v1/limits?provider=claude", nil))
+	var body limitsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || len(body.Current) != 1 {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	// 10×4 + 1000×0.2 + 50×20 + 100×8 USD per million = $0.00204.
+	current := body.Current[0]
+	if current.Tokens == nil || *current.Tokens != 1160 || current.Estimate == nil || current.Estimate.USD != "0.002040000" {
+		t.Fatalf("current = %s", w.Body.String())
 	}
 }

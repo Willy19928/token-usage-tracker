@@ -180,7 +180,8 @@ func migrateAccounting(ctx context.Context, tx *sql.Tx, version int) error {
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_events_provenance_session_turn ON usage_events(provenance,session_id,turn_id)`); err != nil {
 		return err
 	}
-	for _, table := range []string{"usage_events", "sessions"} {
+	// turn_plans decides which requests the billing filter keeps.
+	for _, table := range []string{"usage_events", "sessions", "turn_plans"} {
 		for _, op := range []string{"INSERT", "UPDATE", "DELETE"} {
 			if _, err := tx.ExecContext(ctx, `CREATE TRIGGER IF NOT EXISTS revision_`+table+`_`+op+` AFTER `+op+` ON `+table+` BEGIN UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='data_revision'; END`); err != nil {
 				return err

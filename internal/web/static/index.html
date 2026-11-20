@@ -382,6 +382,7 @@
       <div class="dialog-head"><h2 id="filterTitle" data-i18n="filter.title">篩選目前電腦的資料</h2><button class="dialog-close pressable" type="button" data-close aria-label="關閉篩選" data-i18n-aria-label="action.closeFilter">×</button></div>
       <form class="filter-form" id="filterForm">
         <label><span data-i18n="filter.mode">執行模式</span><select id="filterMode"><option value="" data-i18n="mode.allModes">全部模式</option><option value="regular" data-i18n="mode.regular">一般</option><option value="fast">Fast</option></select></label>
+        <label><span data-i18n="filter.billing">計費</span><select id="filterBilling"><option value="" data-i18n="billing.all">全部計費</option><option value="subscription" data-i18n="billing.subscription">訂閱</option><option value="api" data-i18n="billing.api">API</option></select></label>
         <label><span data-i18n="filter.date">日期</span><input id="filterDate" type="date" aria-label="篩選日期" data-i18n-aria-label="filter.dateAria"></label>
         <label><span data-i18n="filter.model">模型</span><select id="filterModel"><option value="" data-i18n="filter.allModels">全部模型</option></select></label>
         <label><span data-i18n="filter.source">來源</span><select id="filterSource"><option value="" data-i18n="filter.allSources">全部來源</option></select></label>
@@ -455,6 +456,7 @@
       <div class="pricing-meta" id="pricingMeta" data-i18n="pricing.loading">正在讀取本機定價…</div>
       <div class="override-toolbar"><label for="newOverrideModel" data-i18n="pricing.addOverride">新增模型覆寫</label><div><input id="newOverrideModel" autocomplete="off" placeholder="例如 internal-model" data-i18n-placeholder="pricing.placeholder"><button class="action-button quiet pressable" id="addOverride" type="button" data-i18n="action.add">新增</button></div></div>
       <div class="override-list" id="pricingOverrideList"></div>
+      <details class="catalog-disclosure"><summary data-i18n="pricing.autoMapped">檢視自動對應價格</summary><p class="override-hint" id="pricingAutoHint"></p><div class="catalog-table" id="pricingAutoMap"></div></details>
       <details class="catalog-disclosure"><summary data-i18n="pricing.catalog">檢視內建 Standard 價格</summary><div class="catalog-table" id="pricingCatalog"></div></details>
       <div class="dialog-actions"><button class="action-button quiet pressable" type="button" data-close data-i18n="action.cancel">取消</button><button class="action-button primary pressable" id="savePricing" type="button" data-i18n="pricing.save">儲存並重新估算</button></div>
     </div>

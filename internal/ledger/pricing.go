@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"tokenusage/internal/pricing"
 )
 
 // RateCard is one built-in rate row in USD per million tokens, as shown in the
@@ -34,16 +36,17 @@ type UnpricedModel struct {
 
 // PricingInfo is a ledger's rate catalog, user overrides and unpriced usage.
 type PricingInfo struct {
-	Provider      string          `json:"provider"`
-	Label         string          `json:"label"`
-	Currency      string          `json:"currency"`
-	Separate1h    bool            `json:"separate_1h_cache_write"`
-	Catalog       []RateCard      `json:"catalog"`
-	Overrides     []DatedOverride `json:"overrides"`
-	Unpriced      []UnpricedModel `json:"unpriced_models"`
-	Notes         []string        `json:"notes"`
-	PricedTokens  int64           `json:"priced_tokens"`
-	UnpricedTotal int64           `json:"unpriced_tokens"`
+	Provider      string                `json:"provider"`
+	Label         string                `json:"label"`
+	Currency      string                `json:"currency"`
+	Separate1h    bool                  `json:"separate_1h_cache_write"`
+	Catalog       []RateCard            `json:"catalog"`
+	Overrides     []DatedOverride       `json:"overrides"`
+	Unpriced      []UnpricedModel       `json:"unpriced_models"`
+	AutoMapped    []pricing.AutoMapping `json:"auto_mapped"`
+	Notes         []string              `json:"notes"`
+	PricedTokens  int64                 `json:"priced_tokens"`
+	UnpricedTotal int64                 `json:"unpriced_tokens"`
 }
 
 const (
@@ -125,7 +128,16 @@ func (p *Provider) Pricing(ctx context.Context) PricingInfo {
 		info.Overrides = []DatedOverride{}
 	}
 	groups := map[[2]string]*UnpricedModel{}
+	type usageCount struct{ requests, tokens int64 }
+	byModel := map[string]*usageCount{}
 	for _, e := range p.Entries() {
+		count := byModel[e.Model]
+		if count == nil {
+			count = &usageCount{}
+			byModel[e.Model] = count
+		}
+		count.requests++
+		count.tokens += e.Usage.Total
 		if e.Price.Priced {
 			info.PricedTokens += e.Usage.Total
 			continue
@@ -145,18 +157,81 @@ func (p *Provider) Pricing(ctx context.Context) PricingInfo {
 		info.Unpriced = append(info.Unpriced, *group)
 	}
 	sort.Slice(info.Unpriced, func(i, j int) bool { return info.Unpriced[i].Tokens > info.Unpriced[j].Tokens })
+	rules := p.rules()
+	info.AutoMapped = []pricing.AutoMapping{}
+	seen := map[string]bool{}
+	add := func(name string, count *usageCount) {
+		key := rules.canonical(name)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		target, ok := rules.auto(name)
+		if !ok {
+			return
+		}
+		_, how := rules.resolve(info.Overrides, name)
+		row := pricing.AutoMapping{Model: name, Target: target, Overridden: how != mapAuto}
+		if count != nil {
+			row.Requests, row.Tokens = count.requests, count.tokens
+		}
+		info.AutoMapped = append(info.AutoMapped, row)
+	}
+	for name, count := range byModel {
+		add(name, count)
+	}
+	// Saved rows for models with no usage yet can still restore their
+	// automatic mapping.
+	for _, row := range info.Overrides {
+		add(row.Model, nil)
+	}
+	sort.SliceStable(info.AutoMapped, func(i, j int) bool {
+		if info.AutoMapped[i].Tokens != info.AutoMapped[j].Tokens {
+			return info.AutoMapped[i].Tokens > info.AutoMapped[j].Tokens
+		}
+		return info.AutoMapped[i].Model < info.AutoMapped[j].Model
+	})
 	return info
 }
 
 // SetOverrides validates and replaces this ledger's user-entered rates, then
 // reprices every saved request.
 func (p *Provider) SetOverrides(ctx context.Context, rows []DatedOverride) error {
+	rules := p.rules()
 	clean := make([]DatedOverride, 0, len(rows))
+	mapped := map[string]bool{} // models with an alias or unpriced row
+	rated := map[string]bool{}  // models with dated rates
 	for index, row := range rows {
 		row.Model = strings.TrimSpace(row.Model)
 		if row.Model == "" {
 			return fmt.Errorf("第 %d 筆覆寫缺少模型名稱", index+1)
 		}
+		key := rules.canonical(row.Model)
+		if row.AliasOf != "" || row.Unpriced {
+			if row.AliasOf != "" && row.Unpriced {
+				return fmt.Errorf("%s 不能同時設為未定價和對應內建模型", row.Model)
+			}
+			if rules.builtIn(key) {
+				return fmt.Errorf("內建模型 %s 不能對應到其他模型或設為未定價", row.Model)
+			}
+			if mapped[key] || rated[key] {
+				return fmt.Errorf("%s 只能有一筆對應或未定價設定，且不能同時填自訂單價", row.Model)
+			}
+			if row.AliasOf != "" {
+				target := rules.canonical(row.AliasOf)
+				if !rules.builtIn(target) {
+					return fmt.Errorf("%s 的對應模型 %s 不是內建模型", row.Model, row.AliasOf)
+				}
+				row.AliasOf = target
+			}
+			mapped[key] = true
+			clean = append(clean, DatedOverride{Model: row.Model, AliasOf: row.AliasOf, Unpriced: row.Unpriced})
+			continue
+		}
+		if mapped[key] {
+			return fmt.Errorf("%s 只能有一筆對應或未定價設定，且不能同時填自訂單價", row.Model)
+		}
+		rated[key] = true
 		if _, err := time.Parse("2006-01-02", row.ValidFrom); err != nil {
 			return fmt.Errorf("%s 的生效日必須是 YYYY-MM-DD", row.Model)
 		}

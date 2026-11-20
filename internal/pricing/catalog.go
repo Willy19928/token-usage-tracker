@@ -14,6 +14,9 @@ const (
 )
 
 type Override struct {
+	// Unpriced keeps a model unpriced that would otherwise map to a built-in
+	// model automatically.
+	Unpriced                     bool   `json:"unpriced,omitempty"`
 	AliasOf                      string `json:"alias_of,omitempty"`
 	InputUSDPerMillion           string `json:"input_usd_per_million,omitempty"`
 	CachedInputUSDPerMillion     string `json:"cached_input_usd_per_million,omitempty"`
@@ -34,10 +37,12 @@ type CatalogEntry struct {
 }
 
 type ResolvedRate struct {
-	RequestedModel         string
-	CanonicalModel         string
-	Source                 string
-	Custom                 bool
+	RequestedModel string
+	CanonicalModel string
+	Source         string
+	Custom         bool
+	// Auto is set when the rate is a built-in model's, found by AutoTarget.
+	Auto                   bool
 	InputNanoPerToken      int64
 	CachedNanoPerToken     int64
 	CacheWriteNanoPerToken *int64
@@ -204,9 +209,14 @@ func NormalizeOverrides(input map[string]Override) (map[string]Override, error) 
 		if _, ok := resolveBuiltIn(model); ok && model != "codex-auto-review" {
 			return nil, fmt.Errorf("內建官方模型 %q 不能被本機覆寫", model)
 		}
-		if raw.AliasOf != "" {
-			if raw.InputUSDPerMillion != "" || raw.CachedInputUSDPerMillion != "" ||
-				raw.CacheWriteInputUSDPerMillion != "" || raw.OutputUSDPerMillion != "" {
+		hasRates := raw.InputUSDPerMillion != "" || raw.CachedInputUSDPerMillion != "" ||
+			raw.CacheWriteInputUSDPerMillion != "" || raw.OutputUSDPerMillion != ""
+		if raw.Unpriced {
+			if raw.AliasOf != "" || hasRates {
+				return nil, fmt.Errorf("模型 %q 設為未定價時不能同時設定對應或單價", model)
+			}
+		} else if raw.AliasOf != "" {
+			if hasRates {
 				return nil, fmt.Errorf("模型 %q 的 alias_of 與自訂單價不能同時設定", model)
 			}
 			entry, ok := resolveBuiltIn(raw.AliasOf)
@@ -236,6 +246,9 @@ func NormalizeOverrides(input map[string]Override) (map[string]Override, error) 
 func Resolve(model string, overrides map[string]Override) (ResolvedRate, bool, error) {
 	requested := strings.ToLower(strings.TrimSpace(model))
 	if override, ok := overrides[requested]; ok {
+		if override.Unpriced {
+			return ResolvedRate{}, false, nil
+		}
 		if override.AliasOf != "" {
 			entry, found := resolveBuiltIn(override.AliasOf)
 			if !found {
@@ -250,7 +263,14 @@ func Resolve(model string, overrides map[string]Override) (ResolvedRate, bool, e
 	}
 	entry, ok := resolveBuiltIn(requested)
 	if !ok {
-		return ResolvedRate{}, false, nil
+		target, auto := AutoTarget(requested)
+		if !auto {
+			return ResolvedRate{}, false, nil
+		}
+		entry, _ = resolveBuiltIn(target)
+		rate, err := resolvedFromEntry(requested, entry)
+		rate.Auto = true
+		return rate, true, err
 	}
 	rate, err := resolvedFromEntry(requested, entry)
 	return rate, true, err

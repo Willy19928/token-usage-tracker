@@ -58,6 +58,9 @@ func (p *Provider) Select(filter model.Filter, loc *time.Location) []Entry {
 			(filter.Confidence != "" && confidenceOf(e) != filter.Confidence) {
 			continue
 		}
+		if (filter.Billing == "subscription" && e.API) || (filter.Billing == "api" && !e.API) {
+			continue
+		}
 		switch filter.Mode {
 		case "regular":
 			if e.Mode == model.ModeFast {

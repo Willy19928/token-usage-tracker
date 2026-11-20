@@ -1315,17 +1315,21 @@ func priceAntigravity(r AntigravityRecord, at time.Time, overrides []DatedOverri
 		return Price{ReasonKind: "ambiguous_routing_model", Reason: "路由模型缺少可確認的歷史選擇"}
 	}
 	t := r.Totals
+	canonical, how := antigravityRules.resolve(overrides, r.Model)
+	if how == mapUnpriced {
+		return unpriced("manual_unpriced", "已手動設為未定價")
+	}
 	var rate *agRate
 	manual := pickOverride(overrides, r.Model, taipeiDay(at), t.Input+t.Cached, canonicalModel)
 	if manual != nil {
 		rate = &agRate{Input: manual.Input, Output: manual.Output, CacheRead: manual.CacheRead, CacheWrite: manual.CacheWrite}
 	} else {
-		rate = agHistoricalRate(r.Model, at)
+		rate = agHistoricalRate(canonical, at)
 	}
 	if rate == nil {
 		return unpriced("unverified_rate", "模型或使用日期尚無已核實費率")
 	}
-	if manual == nil && r.Model == "gemini-3.1-pro" && t.Input+t.Cached > 200000 {
+	if manual == nil && canonical == "gemini-3.1-pro" && t.Input+t.Cached > 200000 {
 		rate = &agRate{Input: 4, Output: 18, CacheRead: .4}
 	}
 	if manual == nil && t.CacheCreation > 0 && rate.CacheWrite == 0 {

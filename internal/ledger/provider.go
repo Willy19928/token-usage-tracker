@@ -36,6 +36,9 @@ type Entry struct {
 	TokenSource string
 	Usage       model.TokenUsage
 	Price       Price
+	// API is set on a request billed through an API (a relay or an API key)
+	// rather than a subscription.
+	API bool
 }
 
 // ScanInfo is the latest scan summary kept in the ledger state table.

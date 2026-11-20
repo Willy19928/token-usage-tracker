@@ -40,6 +40,7 @@ type Scanner struct {
 	busy              atomic.Bool
 	turnBaselines     map[string]bool // private to one file transaction
 	pointsReady       map[string]bool // sessions whose earlier points are recorded
+	lastPlan          string          // the turn plan recorded last, to skip repeats
 }
 
 type ScanResult struct {
@@ -221,6 +222,12 @@ func (s *Scanner) scanFileTransaction(ctx context.Context, home, path string, me
 		if err := s.backfillRelationship(ctx, path, cursor); err != nil {
 			return result, err
 		}
+		if err := s.backfillProvider(ctx, path, cursor); err != nil {
+			return result, err
+		}
+		if err := s.backfillPlans(ctx, path, cursor); err != nil {
+			return result, err
+		}
 		pendingForkReplay := cursor.ForkedFromID != "" && cursor.ReplayOffset == 0 && cursor.Offset == 0
 		// A compressed copy carries its own modification time but the same
 		// content, so only size and the prefix hash identify it.
@@ -316,6 +323,10 @@ func (s *Scanner) scanFileTransaction(ctx context.Context, home, path string, me
 			ProjectPath: meta.ProjectPath,
 			Source:      firstNonEmpty(meta.Source, meta.ThreadSource),
 			AgentType:   meta.AgentType,
+		}
+		// A file read from the start records its turn plans as it goes.
+		if err := s.Store.MarkPlanFileChecked(ctx, path); err != nil {
+			return result, err
 		}
 		inspection, inspectErr := s.inspectRollout(ctx, path)
 		if inspectErr != nil {
@@ -479,9 +490,10 @@ type turnContextPayload struct {
 }
 
 type eventPayload struct {
-	Type   string          `json:"type"`
-	TurnID string          `json:"turn_id"`
-	Info   json.RawMessage `json:"info"`
+	Type       string          `json:"type"`
+	TurnID     string          `json:"turn_id"`
+	Info       json.RawMessage `json:"info"`
+	RateLimits json.RawMessage `json:"rate_limits"`
 }
 
 type tokenInfo struct {
@@ -582,7 +594,7 @@ func (s *Scanner) processRecord(
 			}
 			result.Warnings++
 		}
-		return s.Store.UpsertSession(ctx, model.SessionInfo{
+		if err := s.Store.UpsertSession(ctx, model.SessionInfo{
 			ParentSessionID: model.SpawnParent(payload.Source), ForkedFromID: payload.ForkedFromID,
 			SessionID:    cursor.SessionID,
 			RolloutPath:  path,
@@ -598,7 +610,10 @@ func (s *Scanner) processRecord(
 			CreatedAt:    meta.CreatedAt,
 			UpdatedAt:    meta.UpdatedAt,
 			Archived:     meta.Archived,
-		})
+		}); err != nil {
+			return err
+		}
+		return s.Store.PutModelProvider(ctx, cursor.SessionID, payload.ModelProvider)
 	case "turn_context":
 		var payload turnContextPayload
 		if err := json.Unmarshal(env.Payload, &payload); err != nil {
@@ -647,6 +662,9 @@ func (s *Scanner) processRecord(
 			return &recordError{fmt.Errorf("invalid token vector")}
 		}
 		cursor.TurnID = firstNonEmpty(payload.TurnID, cursor.TurnID)
+		if err := s.recordPlan(ctx, cursor.SessionID, cursor.TurnID, payload.RateLimits); err != nil {
+			return err
+		}
 		// A new context can resend the preceding response's unchanged snapshot
 		// before its own first response. Do not interpret that mirror as a turn
 		// counter reset. Independent response identities still count a genuinely

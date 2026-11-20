@@ -163,6 +163,8 @@ type Filter struct {
 	SessionID  string
 	Search     string
 	Confidence string
+	// Billing is "subscription", "api" or "" for both.
+	Billing string
 }
 
 type Summary struct {

@@ -374,6 +374,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := migrateRelationships(ctx, tx); err != nil {
 		return err
 	}
+	if err := migrateProviders(ctx, tx); err != nil {
+		return err
+	}
 	if err := migrateAccounting(ctx, tx, databaseVersion); err != nil {
 		return err
 	}
@@ -1654,6 +1657,9 @@ func canonicalWhere(filter model.Filter, alias string) (string, []any) {
 		parts = append(parts, alias+".service_mode='fast'")
 	case "unknown":
 		parts = append(parts, alias+".service_mode='unknown'")
+	}
+	if predicate := billingWhere(filter.Billing, alias); predicate != "" {
+		parts = append(parts, predicate)
 	}
 	if filter.Search != "" {
 		predicate, values := sessionSearchSQL(alias, filter.Search)

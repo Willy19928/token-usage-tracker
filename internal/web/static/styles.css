@@ -603,6 +603,11 @@ select:focus, input:focus { border-color: var(--teal); box-shadow: 0 0 0 3px col
 .catalog-row small { display: block; margin-top: 2px; color: var(--text-faint); }
 .catalog-row.ledger { min-width: 660px; grid-template-columns: 1.4fr .8fr repeat(4, .6fr); }
 .catalog-row.ledger-1h { min-width: 720px; grid-template-columns: 1.4fr .8fr repeat(5, .6fr); }
+.catalog-row.auto { min-width: 660px; grid-template-columns: 1.6fr 1fr repeat(4, .55fr); }
+.catalog-row.auto-1h { min-width: 720px; grid-template-columns: 1.6fr 1fr repeat(5, .55fr); }
+.catalog-row .auto-model { min-width: 0; overflow-wrap: anywhere; }
+.catalog-row .auto-model .remove-override { display: block; margin-top: 4px; padding: 2px 0; white-space: nowrap; }
+#pricingAutoHint { margin: 4px 0 8px; }
 .pricing-tabs { margin-top: 14px; }
 .pricing-notes { margin: -8px 0 18px; padding-left: 18px; color: var(--text-soft); font-size: var(--type-caption); line-height: 1.6; }
 .override-card-head > div { min-width: 0; flex: 1; }

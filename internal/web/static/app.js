@@ -6,6 +6,7 @@ const serverText = (value) => i18n.translateServer(value);
 
 const FILTER_FIELDS = {
   mode: { selector: "#filterMode", labelKey: "filter.mode" },
+  billing: { selector: "#filterBilling", labelKey: "filter.billing" },
   date: { selector: "#filterDate", labelKey: "filter.date" },
   model: { selector: "#filterModel", labelKey: "filter.model" },
   source: { selector: "#filterSource", labelKey: "filter.source" },
@@ -573,6 +574,7 @@ function renderFilterChips() {
     const display = key === "date" ? i18n.formatDate(dateFromKey(value), { year: "numeric", month: "short", day: "numeric" })
       : key === "project" ? shortPath(value)
       : key === "mode" ? t(value === "regular" ? "mode.regularAssumed" : `mode.${value}`)
+      : key === "billing" ? t(`billing.${value}`)
       : key === "confidence" ? confidenceLabel(value)
         : key === "session_id" ? shortId(value) : value;
     const label = fieldLabel(key);
@@ -2419,6 +2421,8 @@ async function loadPricing(provider) {
   $("#pricingNotes").hidden = true;
   $("#pricingOverrideList").innerHTML = `<div class="empty-state">${escapeHTML(t("pricing.loading"))}</div>`;
   $("#pricingCatalog").innerHTML = "";
+  $("#pricingAutoMap").innerHTML = "";
+  $("#pricingAutoHint").textContent = "";
   state.pricing = null;
   try {
     const payload = await api(`/api/v1/pricing${ledger ? `?provider=${encodeURIComponent(provider)}` : ""}`);
@@ -2443,6 +2447,7 @@ function renderLedgerPricing(payload) {
   const list = $("#pricingOverrideList");
   list.innerHTML = "";
   for (const item of unpriced) {
+    if (item.reason_kind === "manual_unpriced") continue; // its manual card follows
     const card = document.createElement("article");
     card.className = "override-card unpriced-card";
     card.innerHTML = `<div class="override-card-head"><div><strong>${escapeHTML(item.model || t("pricing.unknownName"))}</strong><small>${escapeHTML(t("pricing.unpricedRequests", { requests: i18n.formatNumber(item.requests), tokens: fullToken(item.tokens) }))}</small></div>${item.model && item.reason_kind === "unverified_rate" ? `<button class="text-button copper pressable" type="button">${escapeHTML(t("pricing.setRate"))}</button>` : ""}</div><p class="override-hint">${escapeHTML(reasonText(item.reason_kind, item.reason))}</p>`;
@@ -2451,6 +2456,7 @@ function renderLedgerPricing(payload) {
   }
   for (const row of payload.overrides || []) appendLedgerOverrideCard(row);
   if (!list.children.length) list.innerHTML = `<div class="empty-state">${escapeHTML(t("pricing.ledgerEmpty"))}</div>`;
+  renderAutoMap();
 }
 
 function renderLedgerCatalog(payload) {
@@ -2470,7 +2476,14 @@ function appendLedgerOverrideCard(row) {
   const card = document.createElement("article");
   card.className = "override-card";
   card.dataset.ledgerOverride = "";
-  card.innerHTML = `<div class="override-card-head"><div><input class="override-model" data-field="model" value="${value("model")}" placeholder="${escapeHTML(t("pricing.placeholder"))}" aria-label="${escapeHTML(t("pricing.catalogModel"))}"><small>${escapeHTML(t("pricing.localCustom"))}</small></div><button class="remove-override pressable" type="button">${escapeHTML(t("action.remove"))}</button></div>
+  const mode = row.unpriced ? "unpriced" : row.alias_of ? "alias" : "custom";
+  const targets = [...new Set((state.pricing?.catalog || []).map((entry) => entry.model))];
+  const aliasOptions = targets.map((model) => `<option value="${escapeHTML(model)}" ${row.alias_of === model ? "selected" : ""}>${escapeHTML(model)}</option>`).join("");
+  card.innerHTML = `<div class="override-card-head"><div><input class="override-model" data-field="model" value="${value("model")}" placeholder="${escapeHTML(t("pricing.placeholder"))}" aria-label="${escapeHTML(t("pricing.catalogModel"))}"><small>${escapeHTML(t("pricing.localCustom"))}</small></div><button class="remove-override pressable" type="button"></button></div>
+    <div class="override-mode">
+      <label>${escapeHTML(t("pricing.mode"))}<select data-rate-mode><option value="alias" ${mode === "alias" ? "selected" : ""}>${escapeHTML(t("pricing.alias"))}</option><option value="custom" ${mode === "custom" ? "selected" : ""}>${escapeHTML(t("pricing.custom"))}</option><option value="unpriced" ${mode === "unpriced" ? "selected" : ""}>${escapeHTML(t("pricing.keepUnpriced"))}</option></select></label>
+      <label class="alias-field">${escapeHTML(t("pricing.publicModel"))}<select data-alias><option value="">${escapeHTML(t("pricing.chooseModel"))}</option>${aliasOptions}</select></label>
+    </div>
     <div class="custom-rate-grid">
       <label>${escapeHTML(t("pricing.validFrom"))}<input type="date" data-field="valid_from" value="${value("valid_from")}"></label>
       <label>${escapeHTML(t("pricing.validTo"))}<input type="date" data-field="valid_to" value="${value("valid_to")}"></label>
@@ -2482,10 +2495,35 @@ function appendLedgerOverrideCard(row) {
       ${separate ? `<label>Write 1h<input data-rate="cache_write_1h" inputmode="decimal" value="${value("cache_write_1h")}" placeholder="USD / 1M"></label>` : ""}
       <label>Output<input data-rate="output" inputmode="decimal" value="${value("output")}" placeholder="USD / 1M"></label>
     </div>
-    <p class="override-hint">${escapeHTML(t("pricing.ledgerRateHint"))}</p>`;
+    <p class="override-hint"></p>`;
   list.appendChild(card);
-  $(".remove-override", card).addEventListener("click", () => card.remove());
-  $("[data-field=model]", card).focus();
+  const modelInput = $("[data-field=model]", card);
+  const removeButton = $(".remove-override", card);
+  // A model that maps automatically gets "restore" instead of "remove": it
+  // drops every manual card of the model, so the automatic mapping applies.
+  const updateRemove = () => { removeButton.textContent = t(autoTargetOf(modelInput.value) ? "pricing.restoreAuto" : "action.remove"); };
+  const updateMode = () => {
+    const value = $("[data-rate-mode]", card).value;
+    $(".alias-field", card).classList.toggle("hidden", value !== "alias");
+    $(".custom-rate-grid", card).classList.toggle("hidden", value !== "custom");
+    $(".override-hint", card).textContent = t(value === "alias" ? "pricing.aliasLedgerHint" : value === "unpriced" ? "pricing.unpricedHint" : "pricing.ledgerRateHint");
+  };
+  $("[data-rate-mode]", card).addEventListener("change", updateMode);
+  modelInput.addEventListener("input", () => { updateRemove(); renderAutoMap(); });
+  removeButton.addEventListener("click", () => {
+    const key = modelInput.value.trim().toLowerCase();
+    if (autoTargetOf(key)) {
+      for (const other of $$("[data-ledger-override]", list)) {
+        if ($("[data-field=model]", other).value.trim().toLowerCase() === key) other.remove();
+      }
+    } else {
+      card.remove();
+    }
+    renderAutoMap();
+  });
+  updateRemove();
+  updateMode();
+  modelInput.focus();
 }
 
 function collectLedgerOverrides() {
@@ -2495,6 +2533,13 @@ function collectLedgerOverrides() {
     const field = (name) => $(`[data-field=${name}]`, card).value.trim();
     const model = field("model");
     if (!model) throw new Error(t("pricing.modelRequired"));
+    const mode = $("[data-rate-mode]", card).value;
+    if (mode === "unpriced") return { model, unpriced: true };
+    if (mode === "alias") {
+      const alias = $("[data-alias]", card).value;
+      if (!alias) throw new Error(t("pricing.aliasMissing", { model }));
+      return { model, alias_of: alias };
+    }
     const validFrom = field("valid_from");
     if (!validFrom) throw new Error(t("pricing.validFromMissing", { model }));
     const row = { model, valid_from: validFrom, valid_to: field("valid_to") || null, min_prompt_tokens: 0 };
@@ -2533,6 +2578,75 @@ function renderPricing(payload) {
     appendOverrideCard(model, overrides[model], observed.get(model));
   }
   if (!list.children.length) list.innerHTML = `<div class="empty-state">${escapeHTML(t("pricing.empty"))}</div>`;
+  renderAutoMap();
+}
+
+// autoTargetOf returns the built-in model a model name maps to automatically,
+// or "" when it has none.
+function autoTargetOf(model) {
+  const key = String(model || "").trim().toLowerCase();
+  return (state.pricing?.auto_mapped || []).find((row) => row.model.toLowerCase() === key)?.target || "";
+}
+
+function manualCardModels() {
+  const list = $("#pricingOverrideList");
+  const ledger = state.pricingProvider && state.pricingProvider !== "codex";
+  const names = ledger
+    ? $$("[data-ledger-override] [data-field=model]", list).map((input) => input.value)
+    : $$("[data-pricing-model]", list).map((card) => card.dataset.pricingModel);
+  return new Set(names.map((name) => name.trim().toLowerCase()));
+}
+
+// ledgerTodayRate returns the base rate row of a ledger model in effect today.
+function ledgerTodayRate(model) {
+  const today = new Date().toISOString().slice(0, 10);
+  let best = null;
+  for (const row of state.pricing?.catalog || []) {
+    if (row.model !== model || row.min_prompt_tokens > 0 || (row.valid_from || "") > today) continue;
+    if (!best || (row.valid_from || "") >= (best.valid_from || "")) best = row;
+  }
+  return best;
+}
+
+// renderAutoMap lists the automatically mapped models that no manual card in
+// the dialog overrides, with the prices they are charged at.
+function renderAutoMap() {
+  const box = $("#pricingAutoMap");
+  if (!box) return;
+  const ledger = state.pricingProvider && state.pricingProvider !== "codex";
+  $("#pricingAutoHint").textContent = ledger ? `${t("pricing.autoHint")} ${t("pricing.autoLedgerHint")}` : t("pricing.autoHint");
+  const manual = manualCardModels();
+  const rows = (state.pricing?.auto_mapped || []).filter((row) => !manual.has(row.model.toLowerCase()));
+  if (!rows.length) {
+    box.innerHTML = `<div class="empty-state">${escapeHTML(t("pricing.autoEmpty"))}</div>`;
+    return;
+  }
+  const separate = ledger && state.pricing?.separate_1h_cache_write;
+  const columns = separate ? "auto-1h" : "auto";
+  const head = `<div class="catalog-row header ${columns}"><span>${escapeHTML(t("pricing.catalogModel"))}</span><span>${escapeHTML(t("pricing.autoTarget"))}</span><span>Input</span><span>Cached</span><span>${separate ? "Write 5m" : "Write"}</span>${separate ? "<span>Write 1h</span>" : ""}<span>Output</span></div>`;
+  box.innerHTML = head + rows.map((row) => {
+    let name = row.target;
+    let rates;
+    if (ledger) {
+      const rate = ledgerTodayRate(row.target) || {};
+      rates = [rate.input, rate.cache_read, rate.cache_write || "—", ...(separate ? [rate.cache_write_1h ?? "—"] : []), rate.output];
+    } else {
+      const entry = (state.pricing?.catalog || []).find((item) => item.model === row.target) || {};
+      name = entry.display_name || row.target;
+      rates = [entry.input_usd_per_million, entry.cached_input_usd_per_million, entry.cache_write_input_usd_per_million || "—", entry.output_usd_per_million];
+    }
+    const tokens = row.tokens ? `<small>${escapeHTML(t("pricing.observed", { tokens: fullToken(row.tokens) }))}</small>` : "";
+    return `<div class="catalog-row ${columns}"><span class="auto-model">${escapeHTML(row.model)}${tokens}<button class="remove-override pressable" type="button" data-remove-auto="${escapeHTML(row.model)}">${escapeHTML(t("pricing.removeAuto"))}</button></span><span>${escapeHTML(name)}</span>${rates.map((value) => `<span>${escapeHTML(String(value ?? "—"))}</span>`).join("")}</div>`;
+  }).join("");
+  for (const button of $$("[data-remove-auto]", box)) {
+    button.addEventListener("click", () => {
+      const model = button.dataset.removeAuto;
+      const row = rows.find((item) => item.model === model);
+      if (ledger) appendLedgerOverrideCard({ model, unpriced: true });
+      else appendOverrideCard(model, { unpriced: true }, row?.tokens ?? null);
+      renderAutoMap();
+    });
+  }
 }
 
 function renderCatalog(catalog) {
@@ -2546,12 +2660,13 @@ function appendOverrideCard(model, override = null, observedTokens = null) {
     toast(t("pricing.duplicate"), true);
     return;
   }
-  const mode = override?.alias_of ? "alias" : override ? "custom" : "unpriced";
+  const mode = override?.unpriced ? "unpriced" : override?.alias_of ? "alias" : override ? "custom" : "unpriced";
+  const auto = autoTargetOf(model);
   const aliasOptions = (state.pricing?.catalog || []).map((entry) => `<option value="${escapeHTML(entry.model)}" ${override?.alias_of === entry.model ? "selected" : ""}>${escapeHTML(entry.display_name)}</option>`).join("");
   const card = document.createElement("article");
   card.className = "override-card";
   card.dataset.pricingModel = model;
-  card.innerHTML = `<div class="override-card-head"><div><strong>${escapeHTML(model)}</strong><small>${observedTokens == null ? escapeHTML(t("pricing.localCustom")) : escapeHTML(t("pricing.observed", { tokens: fullToken(observedTokens) }))}</small></div><button class="remove-override pressable" type="button">${escapeHTML(t("action.remove"))}</button></div>
+  card.innerHTML = `<div class="override-card-head"><div><strong>${escapeHTML(model)}</strong><small>${observedTokens == null ? escapeHTML(t("pricing.localCustom")) : escapeHTML(t("pricing.observed", { tokens: fullToken(observedTokens) }))}</small></div><button class="remove-override pressable" type="button">${escapeHTML(t(auto ? "pricing.restoreAuto" : "action.remove"))}</button></div>
     <div class="override-mode">
       <label>${escapeHTML(t("pricing.mode"))}<select data-rate-mode><option value="unpriced" ${mode === "unpriced" ? "selected" : ""}>${escapeHTML(t(model.toLowerCase() === "codex-auto-review" ? "pricing.defaultZero" : "pricing.keepUnpriced"))}</option><option value="alias" ${mode === "alias" ? "selected" : ""}>${escapeHTML(t("pricing.alias"))}</option><option value="custom" ${mode === "custom" ? "selected" : ""}>${escapeHTML(t("pricing.custom"))}</option></select></label>
       <label class="alias-field">${escapeHTML(t("pricing.publicModel"))}<select data-alias><option value="">${escapeHTML(t("pricing.chooseModel"))}</option>${aliasOptions}</select></label>
@@ -2571,7 +2686,7 @@ function appendOverrideCard(model, override = null, observedTokens = null) {
     $('.override-hint', card).classList.toggle("hidden", value === "unpriced");
   };
   $('[data-rate-mode]', card).addEventListener("change", updateMode);
-  $('.remove-override', card).addEventListener("click", () => card.remove());
+  $('.remove-override', card).addEventListener("click", () => { card.remove(); renderAutoMap(); });
   updateMode();
 }
 
@@ -2581,7 +2696,11 @@ function collectPricingOverrides() {
   for (const card of $$('[data-pricing-model]', $("#pricingOverrideList"))) {
     const model = card.dataset.pricingModel.trim();
     const mode = $('[data-rate-mode]', card).value;
-    if (mode === "unpriced") continue;
+    if (mode === "unpriced") {
+      // An explicit entry stops the model from mapping automatically.
+      if (autoTargetOf(model)) overrides[model] = { unpriced: true };
+      continue;
+    }
     if (mode === "alias") {
       const alias = $('[data-alias]', card).value;
       if (!alias) throw new Error(t("pricing.aliasMissing", { model }));

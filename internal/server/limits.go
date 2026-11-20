@@ -498,7 +498,8 @@ func (s *Server) limitUsageRevision(ctx context.Context, provider string, overri
 
 // limitUsage totals the provider's usage within a window, across accounts,
 // counting only the models match accepts when it is set, and prices it the
-// way the dashboard's cost views do.
+// way the dashboard's cost views do. Only subscription requests count:
+// requests billed through an API never use a subscription's limits.
 func (s *Server) limitUsage(ctx context.Context, provider, account string, since, until time.Time, match func(string) bool,
 	overrides map[string]pricing.Override) (int64, pricing.Estimate, bool) {
 	if s.Store == nil {
@@ -521,7 +522,7 @@ func (s *Server) limitUsage(ctx context.Context, provider, account string, since
 		}
 		var total int64
 		for _, span := range ranges {
-			filter := model.Filter{Since: span.Since, Until: span.Until}
+			filter := model.Filter{Since: span.Since, Until: span.Until, Billing: "subscription"}
 			summary, err := s.Store.Summary(ctx, filter)
 			if err != nil || s.forEachPricingEvent(ctx, filter, builder.Add) != nil {
 				return 0, pricing.Estimate{}, false
@@ -530,7 +531,7 @@ func (s *Server) limitUsage(ctx context.Context, provider, account string, since
 		}
 		return total, builder.Report().Summary, true
 	}
-	filter := model.Filter{Since: since, Until: until}
+	filter := model.Filter{Since: since, Until: until, Billing: "subscription"}
 	for _, p := range s.Ledgers {
 		if p.Name == provider {
 			var total int64

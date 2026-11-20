@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -437,6 +438,7 @@ type pricingCatalogResponse struct {
 	Catalog         []pricing.CatalogEntry      `json:"catalog"`
 	Overrides       map[string]pricing.Override `json:"overrides"`
 	UnpricedModels  []model.BreakdownItem       `json:"unpriced_models"`
+	AutoMapped      []pricing.AutoMapping       `json:"auto_mapped"`
 }
 
 func (s *Server) handlePricing(w http.ResponseWriter, r *http.Request) {
@@ -577,7 +579,15 @@ func (s *Server) pricingResponse(ctx context.Context, overrides map[string]prici
 		return pricingCatalogResponse{}, err
 	}
 	unpriced := make([]model.BreakdownItem, 0)
+	auto := make([]pricing.AutoMapping, 0)
+	seen := map[string]bool{}
 	for _, item := range items {
+		key := strings.ToLower(strings.TrimSpace(item.Key))
+		seen[key] = true
+		if target, ok := pricing.AutoTarget(key); ok {
+			_, overridden := overrides[key]
+			auto = append(auto, pricing.AutoMapping{Model: item.Key, Target: target, Overridden: overridden, Requests: item.Events, Tokens: item.Usage.Total})
+		}
 		_, found, resolveErr := pricing.Resolve(item.Key, overrides)
 		if resolveErr != nil {
 			return pricingCatalogResponse{}, resolveErr
@@ -586,12 +596,20 @@ func (s *Server) pricingResponse(ctx context.Context, overrides map[string]prici
 			unpriced = append(unpriced, item)
 		}
 	}
+	// Saved overrides for models with no usage yet can still restore their
+	// automatic mapping.
+	for key := range overrides {
+		if target, ok := pricing.AutoTarget(key); ok && !seen[key] {
+			auto = append(auto, pricing.AutoMapping{Model: key, Target: target, Overridden: true})
+		}
+	}
+	sort.SliceStable(auto, func(i, j int) bool { return auto[i].Tokens > auto[j].Tokens })
 	if overrides == nil {
 		overrides = map[string]pricing.Override{}
 	}
 	return pricingCatalogResponse{
 		FastRulesAsOf: pricing.FastRulesAsOf, FastRulesSource: pricing.FastRulesSource, Basis: pricing.Basis, Currency: pricing.Currency, CatalogAsOf: pricing.CatalogAsOf,
-		Catalog: pricing.Catalog(), Overrides: overrides, UnpricedModels: unpriced,
+		Catalog: pricing.Catalog(), Overrides: overrides, UnpricedModels: unpriced, AutoMapped: auto,
 	}, nil
 }
 
@@ -841,6 +859,10 @@ func parseFilterIn(query url.Values, loc *time.Location) (model.Filter, error) {
 	filter.Model = query.Get("model")
 	filter.Source = query.Get("source")
 	filter.AgentType = query.Get("agent_type")
+	filter.Billing = query.Get("billing")
+	if filter.Billing != "" && filter.Billing != "subscription" && filter.Billing != "api" {
+		return filter, fmt.Errorf("billing: 不支援的計費方式 %q", filter.Billing)
+	}
 	filter.Project = query.Get("project")
 	filter.SessionID = query.Get("session_id")
 	filter.Search = strings.TrimSpace(query.Get("q"))
