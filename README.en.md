@@ -241,6 +241,7 @@ or with `/login` inside Claude Code. The Claude desktop app has its own separate
 
 - The login Claude Code saved in `~/.claude/.credentials.json` (or `$CLAUDE_CONFIG_DIR/.credentials.json`) is used.
 - When the access token is within 10 minutes of expiring, or a request returns 401, the login is refreshed exactly as Claude Code does it (`https://platform.claude.com/v1/oauth/token` with Claude Code's OAuth client ID), and the new tokens are written back to the same file atomically, keeping every other field.
+- Every reading is recorded under the account it belongs to. When the profile request fails or times out, the signed-in account Claude Code keeps in `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) is read instead, only its account IDs, email and plan type; with neither, the reading is skipped and the next pass tries again.
 - The refresh token itself expires after about 30 days; sign in again when it does.
 - Because the tracker rotates the refresh token, a terminal Claude Code that refreshes at the same moment may need to sign in again (rare).
 - Tokens are sent only to the Anthropic endpoints above and are never logged or stored by the tracker.

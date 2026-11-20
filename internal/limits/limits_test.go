@@ -441,6 +441,10 @@ func TestClaudeCollectorReadsServerLimitRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/profile" {
+			fmt.Fprint(w, `{"account":{"uuid":"u1","has_claude_max":true},"organization":{"uuid":"o1"}}`)
+			return
+		}
 		if r.URL.Path != "/usage" {
 			http.NotFound(w, r)
 			return
@@ -492,8 +496,13 @@ func TestClaudeCollectorRefreshesAfterUnauthorized(t *testing.T) {
 				return
 			}
 			fmt.Fprint(w, `{"five_hour":{"utilization":1,"resets_at":"2026-11-08T10:00:00Z"}}`)
-		default:
-			http.Error(w, "no profile", http.StatusNotFound)
+		case "/profile":
+			// The revoked token fails here first: one refresh serves both.
+			if r.Header.Get("Authorization") != "Bearer fresh" {
+				http.Error(w, "revoked", http.StatusUnauthorized)
+				return
+			}
+			fmt.Fprint(w, `{"account":{"uuid":"u1","has_claude_pro":true}}`)
 		}
 	}))
 	defer server.Close()
@@ -507,6 +516,79 @@ func TestClaudeCollectorRefreshesAfterUnauthorized(t *testing.T) {
 	json.Unmarshal(data, &saved)
 	if refreshes != 1 || saved["claudeAiOauth"]["accessToken"] != "fresh" || saved["claudeAiOauth"]["refreshToken"] != "r1" {
 		t.Fatalf("refreshes=%d saved=%s", refreshes, data)
+	}
+	if windows, _ := st.Windows(context.Background(), Claude, 10); len(windows) != 1 || windows[0].Account != "u1" {
+		t.Fatalf("windows = %+v", windows)
+	}
+}
+
+// A reading is kept only under its account: without one it would show as a
+// separate account. When the profile request fails, the account Claude Code
+// keeps in its own state file is used; with neither, nothing is recorded.
+func TestClaudeCollectorKeepsReadingsUnderTheirAccount(t *testing.T) {
+	st := openTestStore(t)
+	dir := t.TempDir()
+	now := time.Date(2026, 11, 8, 6, 0, 0, 0, time.UTC)
+	data, _ := json.Marshal(map[string]any{"claudeAiOauth": map[string]any{"accessToken": "a", "refreshToken": "r", "expiresAt": now.Add(6 * time.Hour).UnixMilli()}})
+	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	profileUp, profileCalls, usageCalls := false, 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/profile":
+			profileCalls++
+			if !profileUp {
+				http.Error(w, "busy", http.StatusTooManyRequests)
+				return
+			}
+			fmt.Fprint(w, `{"account":{"uuid":"u1","email":"me@example.test","has_claude_max":true},"organization":{"uuid":"o1","rate_limit_tier":"default_claude_max_5x"}}`)
+		case "/usage":
+			usageCalls++
+			fmt.Fprint(w, `{"five_hour":{"utilization":20,"resets_at":"2026-11-08T09:00:00Z"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	collector := &ClaudeCollector{Store: st, ConfigDir: dir, Now: func() time.Time { return now },
+		UsageURL: server.URL + "/usage", TokenURL: server.URL + "/token", Profile: server.URL + "/profile"}
+	window := func() (string, string) {
+		t.Helper()
+		windows, _ := st.Windows(context.Background(), Claude, 10)
+		if len(windows) != 1 {
+			t.Fatalf("windows = %+v", windows)
+		}
+		return windows[0].Account, windows[0].Plan
+	}
+	// No profile and no state file: nothing is recorded.
+	if err := collector.Collect(context.Background()); err == nil {
+		t.Fatal("collect without any account succeeded")
+	}
+	if windows, _ := st.Windows(context.Background(), Claude, 10); len(windows) != 0 || usageCalls != 0 {
+		t.Fatalf("windows = %+v, usage calls = %d", windows, usageCalls)
+	}
+	// The state file names the signed-in account.
+	state := `{"numStartups":3,"oauthAccount":{"accountUuid":"u1","emailAddress":"me@example.test","organizationUuid":"o1",` +
+		`"organizationType":"claude_max","organizationRateLimitTier":"default_claude_max_5x"}}`
+	if err := os.WriteFile(filepath.Join(dir, ".claude.json"), []byte(state), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(5 * time.Minute)
+	if err := collector.Collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if id, plan := window(); id != "u1/o1" || plan != "Max 5x" {
+		t.Fatalf("window account = %s %s", id, plan)
+	}
+	// The profile is asked for again, and is used once it answers.
+	profileUp = true
+	now = now.Add(5 * time.Minute)
+	if err := collector.Collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if id, plan := window(); id != "u1/o1" || plan != "Max 5x" || profileCalls != 3 || collector.profileFor != "a" {
+		t.Fatalf("window account = %s %s, profile calls = %d", id, plan, profileCalls)
 	}
 }
 

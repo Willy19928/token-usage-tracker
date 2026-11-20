@@ -86,6 +86,48 @@ func (c *ClaudeCollector) credentialsPath() string {
 	return filepath.Join(firstNonEmpty(c.ConfigDir, ClaudeConfigDir()), ".credentials.json")
 }
 
+// statePath is Claude Code's state file: inside the configuration folder when
+// one is set, otherwise .claude.json in the home folder.
+func (c *ClaudeCollector) statePath() string {
+	dir := c.ConfigDir
+	if dir == "" {
+		dir = strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR"))
+	}
+	if dir == "" {
+		dir, _ = os.UserHomeDir()
+	}
+	return filepath.Join(dir, ".claude.json")
+}
+
+// localAccount reads the signed-in account Claude Code keeps in its state
+// file. Only the account's identity and plan are read.
+func (c *ClaudeCollector) localAccount() (Account, bool) {
+	data, err := os.ReadFile(c.statePath())
+	if err != nil {
+		return Account{}, false
+	}
+	var state struct {
+		OAuthAccount struct {
+			AccountUUID      string `json:"accountUuid"`
+			EmailAddress     string `json:"emailAddress"`
+			OrganizationUUID string `json:"organizationUuid"`
+			OrganizationType string `json:"organizationType"`
+			OrganizationTier string `json:"organizationRateLimitTier"`
+			SeatTier         any    `json:"seatTier"`
+		} `json:"oauthAccount"`
+	}
+	if json.Unmarshal(data, &state) != nil || state.OAuthAccount.AccountUUID == "" {
+		return Account{}, false
+	}
+	a := state.OAuthAccount
+	id := a.AccountUUID
+	if a.OrganizationUUID != "" {
+		id += "/" + a.OrganizationUUID
+	}
+	seat, _ := a.SeatTier.(string)
+	return Account{ID: id, Email: a.EmailAddress, Plan: claudePlanLabel("", a.OrganizationType, a.OrganizationTier, seat, false, false)}, true
+}
+
 // Collect takes one reading of every reported window.
 func (c *ClaudeCollector) Collect(ctx context.Context) error {
 	token, err := c.accessToken(ctx, false)
@@ -93,8 +135,33 @@ func (c *ClaudeCollector) Collect(ctx context.Context) error {
 		return err
 	}
 	if c.profileFor != token {
-		if account, err := c.fetchProfile(ctx, token); err == nil {
+		// Readings are kept only under the account they belong to: one
+		// without it would show as a separate, unrecorded account.
+		account, err := c.fetchProfile(ctx, token)
+		if errors.Is(err, errClaudeUnauthorized) {
+			if token, err = c.accessToken(ctx, true); err == nil {
+				account, err = c.fetchProfile(ctx, token)
+			}
+		}
+		if errors.Is(err, ErrClaudeSignedOut) {
+			return err
+		}
+		if err == nil && account.ID == "" {
+			err = errors.New("沒有帳號識別碼")
+		}
+		switch {
+		case err == nil:
 			c.account, c.profileFor = account, token
+		default:
+			// The profile request can fail or hang for a while. Claude Code
+			// keeps the signed-in account in its own state file; use it, and
+			// ask for the profile again next pass. With neither, this pass
+			// records nothing.
+			local, ok := c.localAccount()
+			if !ok {
+				return fmt.Errorf("claude profile: %w", err)
+			}
+			c.account = local
 		}
 	}
 	var body map[string]json.RawMessage

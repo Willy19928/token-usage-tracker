@@ -241,6 +241,7 @@ claude auth login
 
 - 使用 Claude Code 存在 `~/.claude/.credentials.json`（或 `$CLAUDE_CONFIG_DIR/.credentials.json`）的登入。
 - 存取權杖距離到期不到 10 分鐘，或請求回傳 401 時，會用與 Claude Code 相同的方式更新登入（`https://platform.claude.com/v1/oauth/token`，使用 Claude Code 的 OAuth client ID），再把新權杖以原子寫入寫回同一個檔案，其他欄位保持不變。
+- 每筆額度讀數都記在它所屬的帳號下。查詢帳號資料失敗或逾時時，改讀 Claude Code 記在 `~/.claude.json`（或 `$CLAUDE_CONFIG_DIR/.claude.json`）的登入帳號，只讀帳號識別碼、電子郵件與方案類型；兩者都取不到時，這次讀數不記錄，下一輪再試。
 - 更新權杖本身約 30 天後到期，到期後請重新登入。
 - 因為程式會輪替更新權杖，若終端機裡的 Claude Code 剛好在同一刻也更新登入，那邊可能需要重新登入（很少發生）。
 - 權杖只會送往上述 Anthropic 端點，程式不會記錄或另外保存。
