@@ -141,6 +141,7 @@ func (s *Server) handleLimits(w http.ResponseWriter, r *http.Request) {
 	revision, cacheable := s.limitUsageRevision(ctx, provider, overrides)
 	cached, _ := s.limitUsageCache.get(revision)
 	totals := map[string]limitUsageTotal{}
+	apart := geminiFamilySpans(windows)
 	for n, list := range [][]limitWindow{out.Current, out.Windows} {
 		for i := range list {
 			window := &list[i]
@@ -148,7 +149,8 @@ func (s *Server) handleLimits(w http.ResponseWriter, r *http.Request) {
 			if window.StartsAt.IsZero() || (n == 0 && !window.Active) {
 				continue
 			}
-			match, ok := limitModelMatcher(provider, window.Keys)
+			spans := apart[window.Account]
+			match, ok := limitModelMatcher(provider, window.Keys, spans)
 			if !ok {
 				continue
 			}
@@ -157,7 +159,7 @@ func (s *Server) handleLimits(w http.ResponseWriter, r *http.Request) {
 				end = minTime(end, window.EndedAt)
 			}
 			until := minTime(end, now)
-			key := fmt.Sprintf("%s|%s|%d|%d", window.Account, strings.Join(window.Keys, ","), window.StartsAt.Unix(), until.Unix())
+			key := fmt.Sprintf("%s|%s|%d|%d|%v", window.Account, strings.Join(window.Keys, ","), window.StartsAt.Unix(), until.Unix(), spans)
 			ended := cacheable && !end.After(now)
 			if usage, ok := cached[key]; ok && ended {
 				totals[key] = usage
@@ -401,11 +403,58 @@ func minTime(a, b time.Time) time.Time {
 	return b
 }
 
-// limitModelMatcher says which models a limit counts. A nil matcher counts
-// every model; ok is false for limits on a surface rather than on models,
-// whose usage the ledgers cannot separate.
-func limitModelMatcher(provider string, keys []string) (match func(string) bool, ok bool) {
-	var parts []func(string) bool
+// geminiFamilySpan is a time a Gemini model family had an Antigravity bucket
+// of its own, apart from the shared Gemini one.
+type geminiFamilySpan struct {
+	family     string
+	start, end time.Time
+}
+
+// geminiFamily names the model family of an Antigravity bucket kept apart
+// from the shared Gemini buckets ("gemini-argon-wtu-weekly" is "argon").
+func geminiFamily(key string) string {
+	bucket, _, _ := strings.Cut(strings.ToLower(key), ":")
+	rest, ok := strings.CutPrefix(bucket, "gemini-")
+	if !ok {
+		return ""
+	}
+	family, _, _ := strings.Cut(rest, "-")
+	if family == "weekly" || family == "5h" {
+		return ""
+	}
+	return family
+}
+
+// geminiFamilySpans lists, per account, when each family had its own bucket.
+func geminiFamilySpans(windows []limits.Window) map[string][]geminiFamilySpan {
+	out := map[string][]geminiFamilySpan{}
+	for _, w := range windows {
+		family := geminiFamily(w.Key)
+		if w.Provider != limits.Antigravity || family == "" {
+			continue
+		}
+		start, end := w.StartedAt, w.ResetsAt
+		if start.IsZero() {
+			start = w.ResetsAt.Add(-time.Duration(w.WindowMinutes) * time.Minute)
+		}
+		if !w.EndedAt.IsZero() {
+			end = minTime(end, w.EndedAt)
+		}
+		out[w.Account] = append(out[w.Account], geminiFamilySpan{family: family, start: start, end: end})
+	}
+	return out
+}
+
+// limitModelMatcher says which models a limit counts at a given time. A nil
+// matcher counts every model; ok is false for limits on a surface rather than
+// on models, whose usage the ledgers cannot separate. Antigravity's shared
+// Gemini buckets count every Gemini model except one while its family had a
+// bucket of its own, as Antigravity regroups its models from time to time.
+func limitModelMatcher(provider string, keys []string, apart []geminiFamilySpan) (match func(model string, at time.Time) bool, ok bool) {
+	var parts []func(string, time.Time) bool
+	modelOnly := func(f func(string) bool) func(string, time.Time) bool {
+		return func(model string, _ time.Time) bool { return f(model) }
+	}
 	for _, key := range keys {
 		key = strings.ToLower(key)
 		switch provider {
@@ -414,30 +463,40 @@ func limitModelMatcher(provider string, keys []string) (match func(string) bool,
 			case key == "five_hour" || key == "seven_day":
 				return nil, true
 			case key == "seven_day_opus":
-				parts = append(parts, containsAny("opus"))
+				parts = append(parts, modelOnly(containsAny("opus")))
 			case key == "seven_day_sonnet":
-				parts = append(parts, containsAny("sonnet"))
+				parts = append(parts, modelOnly(containsAny("sonnet")))
 			case strings.HasPrefix(key, "weekly_scoped:") || strings.HasPrefix(key, "session_scoped:"):
 				id := key[strings.Index(key, ":")+1:]
 				if id == "" || strings.Contains(id, "cowork") || strings.Contains(id, "app") {
 					return nil, false
 				}
-				parts = append(parts, containsAny(id))
+				parts = append(parts, modelOnly(containsAny(id)))
 			default:
 				return nil, false
 			}
 		case limits.Antigravity:
 			bucket, _, _ := strings.Cut(key, ":")
 			switch {
-			case strings.HasPrefix(bucket, "gemini-argon"):
-				parts = append(parts, containsAny("argon"))
+			case geminiFamily(bucket) != "":
+				parts = append(parts, modelOnly(containsAny(geminiFamily(bucket))))
 			case strings.HasPrefix(bucket, "gemini-weekly") || strings.HasPrefix(bucket, "gemini-5h"):
-				parts = append(parts, func(model string) bool { return strings.Contains(model, "gemini") && !strings.Contains(model, "argon") })
+				parts = append(parts, func(model string, at time.Time) bool {
+					if !strings.Contains(model, "gemini") {
+						return false
+					}
+					for _, span := range apart {
+						if strings.Contains(model, span.family) && !at.Before(span.start) && at.Before(span.end) {
+							return false
+						}
+					}
+					return true
+				})
 			case strings.HasPrefix(bucket, "3p-"):
-				parts = append(parts, containsAny("claude", "gpt"))
+				parts = append(parts, modelOnly(containsAny("claude", "gpt")))
 			default:
 				// Older Antigravity names each model family itself.
-				parts = append(parts, func(model string) bool { return strings.HasPrefix(model, bucket) })
+				parts = append(parts, modelOnly(func(model string) bool { return strings.HasPrefix(model, bucket) }))
 			}
 		default:
 			return nil, true
@@ -446,10 +505,10 @@ func limitModelMatcher(provider string, keys []string) (match func(string) bool,
 	if len(parts) == 0 {
 		return nil, true
 	}
-	return func(model string) bool {
+	return func(model string, at time.Time) bool {
 		model = strings.ToLower(model)
 		for _, part := range parts {
-			if part(model) {
+			if part(model, at) {
 				return true
 			}
 		}
@@ -500,7 +559,7 @@ func (s *Server) limitUsageRevision(ctx context.Context, provider string, overri
 // counting only the models match accepts when it is set, and prices it the
 // way the dashboard's cost views do. Only subscription requests count:
 // requests billed through an API never use a subscription's limits.
-func (s *Server) limitUsage(ctx context.Context, provider, account string, since, until time.Time, match func(string) bool,
+func (s *Server) limitUsage(ctx context.Context, provider, account string, since, until time.Time, match func(string, time.Time) bool,
 	overrides map[string]pricing.Override) (int64, pricing.Estimate, bool) {
 	if s.Store == nil {
 		return 0, pricing.Estimate{}, false
@@ -537,7 +596,7 @@ func (s *Server) limitUsage(ctx context.Context, provider, account string, since
 			var total int64
 			var entries []ledger.Entry
 			for _, entry := range p.Select(filter, s.location()) {
-				if match == nil || match(entry.Model) {
+				if match == nil || match(entry.Model, entry.Timestamp) {
 					total += entry.Usage.Total
 					entries = append(entries, entry)
 				}

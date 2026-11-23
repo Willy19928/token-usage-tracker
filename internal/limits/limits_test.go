@@ -724,3 +724,124 @@ func TestClaudePlanLabel(t *testing.T) {
 		}
 	}
 }
+
+// Antigravity regroups its models: a bucket the summary stops naming leaves
+// the current view, and its window ends where it was last seen.
+func TestAntigravityCollectorRetiresRegroupedBuckets(t *testing.T) {
+	st := openTestStore(t)
+	gemini := t.TempDir()
+	daemon := filepath.Join(gemini, "antigravity", "daemon")
+	if err := os.MkdirAll(daemon, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	summary := `{"response":{"groups":[
+		{"displayName":"Gemini Models","buckets":[
+			{"bucketId":"gemini-weekly","window":"weekly","remainingFraction":0.9,"resetTime":"2026-11-14T00:00:00Z"}]},
+		{"displayName":"Gemini 4 Argon","buckets":[
+			{"bucketId":"gemini-argon-wtu-weekly","window":"weekly","remainingFraction":0.5,"resetTime":"2026-11-14T06:00:00Z"}]}]}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case antigravityStatusPath:
+			fmt.Fprint(w, `{"userStatus":{"email":"me@example.test"}}`)
+		case antigravitySummaryPath:
+			fmt.Fprint(w, summary)
+		}
+	}))
+	defer server.Close()
+	data, _ := json.Marshal(map[string]any{"httpPort": server.Listener.Addr().(*net.TCPAddr).Port, "csrfToken": "csrf"})
+	if err := os.WriteFile(filepath.Join(daemon, "hub_1.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 8, 11, 0, 0, 0, time.UTC)
+	collector := &AntigravityCollector{Store: st, GeminiHome: gemini, Now: func() time.Time { return now }}
+	if err := collector.Collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	seen := now
+	summary = `{"response":{"groups":[
+		{"displayName":"Gemini Models","buckets":[
+			{"bucketId":"gemini-weekly","window":"weekly","remainingFraction":0.99,"resetTime":"2026-11-15T11:05:00Z"}]}]}}`
+	now = now.Add(10 * time.Minute)
+	if err := collector.Collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	latest, _ := st.Latest(context.Background(), Antigravity, now)
+	if len(latest) != 1 || latest[0].Key != "gemini-weekly" || latest[0].LastPercent != 1 {
+		t.Fatalf("latest = %+v", latest)
+	}
+	windows, _ := st.Windows(context.Background(), Antigravity, 10)
+	ended := map[string]time.Time{}
+	for _, w := range windows {
+		if w.Key == "gemini-argon-wtu-weekly" {
+			ended[w.Key] = w.EndedAt
+		}
+	}
+	if !ended["gemini-argon-wtu-weekly"].Equal(seen) {
+		t.Fatalf("argon ended at %v, want %v; windows = %+v", ended["gemini-argon-wtu-weekly"], seen, windows)
+	}
+}
+
+// Each language server keeps its own copy of the summary: the freshest
+// reading of each bucket wins, servers signed in elsewhere are left out, and a
+// bucket that does not apply for now is not read as used up.
+func TestAntigravityCollectorTakesFreshestServer(t *testing.T) {
+	st := openTestStore(t)
+	gemini := t.TempDir()
+	daemon := filepath.Join(gemini, "antigravity", "daemon")
+	if err := os.MkdirAll(daemon, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	serve := func(email, summary string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case antigravityStatusPath:
+				fmt.Fprintf(w, `{"userStatus":{"email":%q}}`, email)
+			case antigravitySummaryPath:
+				fmt.Fprint(w, summary)
+			}
+		}))
+	}
+	stale := serve("me@example.test", `{"response":{"groups":[{"displayName":"Claude and GPT models","buckets":[
+		{"bucketId":"3p-weekly","window":"weekly","remainingFraction":0.2,"resetTime":"2026-11-15T00:00:00Z"},
+		{"bucketId":"3p-5h","window":"5h","remainingFraction":0.3,"resetTime":"2026-11-08T14:00:00Z"}]}]}}`)
+	fresh := serve("me@example.test", `{"response":{"groups":[{"displayName":"Claude and GPT models","buckets":[
+		{"bucketId":"3p-weekly","window":"weekly","remainingFraction":0,"resetTime":"2026-11-15T00:00:00Z"},
+		{"bucketId":"3p-5h","window":"5h","remainingFraction":0,"disabled":true,"resetTime":"2026-11-08T14:00:00Z"}]}]}}`)
+	other := serve("someone@example.test", `{"response":{"groups":[{"displayName":"Claude and GPT models","buckets":[
+		{"bucketId":"3p-weekly","window":"weekly","remainingFraction":0.5,"resetTime":"2026-11-20T00:00:00Z"}]}]}}`)
+	for _, s := range []*httptest.Server{stale, fresh, other} {
+		defer s.Close()
+	}
+	now := time.Date(2026, 11, 8, 11, 0, 0, 0, time.UTC)
+	for i, s := range []*httptest.Server{stale, fresh, other} {
+		data, _ := json.Marshal(map[string]any{"httpPort": s.Listener.Addr().(*net.TCPAddr).Port, "csrfToken": "csrf"})
+		path := filepath.Join(daemon, fmt.Sprintf("hub_%d.json", i))
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// The stale server's discovery file is the newest, so it answers first.
+		modified := now.Add(-time.Duration(i) * time.Hour)
+		if err := os.Chtimes(path, modified, modified); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The 5-hour bucket was last read while it still applied.
+	if err := st.Observe(context.Background(), Observation{Provider: Antigravity, Account: "me@example.test", Key: "3p-5h",
+		WindowMinutes: 300, UsedPercent: 60, ResetsAt: time.Date(2026, 11, 8, 14, 0, 0, 0, time.UTC), ObservedAt: now.Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	collector := &AntigravityCollector{Store: st, GeminiHome: gemini, Now: func() time.Time { return now }}
+	if err := collector.Collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	latest, _ := st.Latest(context.Background(), Antigravity, now)
+	got := map[string]Window{}
+	for _, w := range latest {
+		got[w.Key] = w
+	}
+	// The disabled 5-hour bucket keeps that reading rather than reading full.
+	if len(latest) != 2 || got["3p-weekly"].LastPercent != 100 || !got["3p-weekly"].ResetsAt.Equal(time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC)) ||
+		got["3p-5h"].LastPercent != 60 {
+		t.Fatalf("latest = %+v", latest)
+	}
+}

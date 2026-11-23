@@ -227,7 +227,7 @@ TokenUsage/
 
 - **Codex**（一律開啟）：讀取 Codex 在 rollout 紀錄（`sessions/`、`archived_sessions/`，含 `.jsonl.zst`）中隨每次 Token 計數寫下的 `rate_limits` 快照，包括已用百分比、週期長度（300 分鐘／10080 分鐘）、重置時間與方案，每分鐘收集一次。目前登入的帳號由各 Codex 資料夾中 Codex 自己的 `auth.json` 判斷，只取用其中的身分資訊（電子郵件、帳號 ID、方案），不取用也不保存任何權杖。
 - **Claude Code**（預設關閉）：每 5 分鐘呼叫 Anthropic 官方額度端點 `https://api.anthropic.com/api/oauth/usage`（與 Claude Code 的 `/usage` 相同的資料），並向 `https://api.anthropic.com/api/oauth/profile` 取得帳號電子郵件與方案。這是整個 Claude 帳號的額度，聊天與 Claude Code 共用。額度項目照伺服器回傳的清單記錄，所以方案特有的額度（例如 Max 方案個別模型的每週額度）也會出現。
-- **Antigravity**（一律開啟）：Antigravity 執行時，每 2 分鐘向 Antigravity 自己在本機的語言伺服器查詢帳號額度：每組模型（例如 Gemini、Claude 與 GPT、Gemini 4 Argon）各自的每週與 5 小時額度剩餘比例與重置時間，和 Antigravity 介面顯示的相同，以及帳號電子郵件與方案。程式透過 Antigravity 為自家 CLI 寫下的探索檔 `~/.gemini/antigravity/daemon/hub_*.json`（連接埠與本機 CSRF 權杖）找到伺服器，只連線到 `127.0.0.1`。較舊、沒有額度摘要的 Antigravity 只會回報目前卡住的那一個額度，這時週期長度依距離重置的時間推算。
+- **Antigravity**（一律開啟）：Antigravity 執行時，每 2 分鐘向 Antigravity 自己在本機的語言伺服器查詢帳號額度：每組模型（例如 Gemini、Claude 與 GPT）各自的每週與 5 小時額度剩餘比例與重置時間，和 Antigravity 介面顯示的相同，以及帳號電子郵件與方案。分組跟著 Antigravity 目前的設定：Antigravity 不再回報的額度會從目前額度移除，該期在最後一次回報時結束，之後那些模型的用量算進接手的那一組；過去各期的 Token 合計依當時的分組計算。同時開著多個 Antigravity 視窗時，各自的語言伺服器可能回報不同步的數字，程式會詢問所有登入同一帳號的伺服器，取每個額度最新的讀數。暫時不適用的額度（例如每週額度用完時的 5 小時額度）保留上一次的讀數，不會記成用完。程式透過 Antigravity 為自家 CLI 寫下的探索檔 `~/.gemini/antigravity/daemon/hub_*.json`（連接埠與本機 CSRF 權杖）找到伺服器，只連線到 `127.0.0.1`。較舊、沒有額度摘要的 Antigravity 只會回報目前卡住的那一個額度，這時週期長度依距離重置的時間推算。
 
 ### 開啟 Claude Code 額度
 

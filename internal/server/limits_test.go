@@ -299,22 +299,30 @@ func TestLimitSeriesCustomRange(t *testing.T) {
 
 func TestLimitModelMatcherCountsTheLimitsModels(t *testing.T) {
 	models := []string{"claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "gpt-oss-120b", "gemini-3.8-flash", "gemini-4-argon"}
+	at := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
+	argonApart := []geminiFamilySpan{{family: "argon", start: at.Add(-time.Hour), end: at.Add(time.Hour)}}
+	argonBefore := []geminiFamilySpan{{family: "argon", start: at.Add(-2 * time.Hour), end: at.Add(-time.Hour)}}
 	for _, tc := range []struct {
 		provider string
 		keys     []string
+		apart    []geminiFamilySpan
 		want     string // matched models joined by ","; "*" for all; "-" when not attributable
 	}{
-		{limits.Claude, []string{"five_hour"}, "*"},
-		{limits.Claude, []string{"seven_day_opus"}, "claude-opus-5-5"},
-		{limits.Claude, []string{"weekly_scoped:fable"}, "claude-fable-5-1"},
-		{limits.Claude, []string{"seven_day_cowork"}, "-"},
-		{limits.Antigravity, []string{"3p-weekly"}, "claude-opus-5-5,claude-sonnet-5-5,claude-fable-5-1,gpt-oss-120b"},
-		{limits.Antigravity, []string{"gemini-5h"}, "gemini-3.8-flash"},
-		{limits.Antigravity, []string{"gemini-argon-wtu-weekly"}, "gemini-4-argon"},
-		{limits.Antigravity, []string{"claude-opus-5-5:300", "gpt-oss-120b:300"}, "claude-opus-5-5,gpt-oss-120b"},
-		{limits.Codex, []string{"codex:300"}, "*"},
+		{limits.Claude, []string{"five_hour"}, nil, "*"},
+		{limits.Claude, []string{"seven_day_opus"}, nil, "claude-opus-5-5"},
+		{limits.Claude, []string{"weekly_scoped:fable"}, nil, "claude-fable-5-1"},
+		{limits.Claude, []string{"seven_day_cowork"}, nil, "-"},
+		{limits.Antigravity, []string{"3p-weekly"}, nil, "claude-opus-5-5,claude-sonnet-5-5,claude-fable-5-1,gpt-oss-120b"},
+		// The shared Gemini buckets leave out a family only while it has a
+		// bucket of its own.
+		{limits.Antigravity, []string{"gemini-5h"}, argonApart, "gemini-3.8-flash"},
+		{limits.Antigravity, []string{"gemini-weekly"}, argonBefore, "gemini-3.8-flash,gemini-4-argon"},
+		{limits.Antigravity, []string{"gemini-weekly"}, nil, "gemini-3.8-flash,gemini-4-argon"},
+		{limits.Antigravity, []string{"gemini-argon-wtu-weekly"}, argonApart, "gemini-4-argon"},
+		{limits.Antigravity, []string{"claude-opus-5-5:300", "gpt-oss-120b:300"}, nil, "claude-opus-5-5,gpt-oss-120b"},
+		{limits.Codex, []string{"codex:300"}, nil, "*"},
 	} {
-		match, ok := limitModelMatcher(tc.provider, tc.keys)
+		match, ok := limitModelMatcher(tc.provider, tc.keys, tc.apart)
 		got := "-"
 		switch {
 		case ok && match == nil:
@@ -322,7 +330,7 @@ func TestLimitModelMatcherCountsTheLimitsModels(t *testing.T) {
 		case ok:
 			var matched []string
 			for _, model := range models {
-				if match(model) {
+				if match(model, at) {
 					matched = append(matched, model)
 				}
 			}

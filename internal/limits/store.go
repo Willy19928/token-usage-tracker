@@ -293,6 +293,53 @@ func (s *Store) Observe(ctx context.Context, o Observation) error {
 	return tx.Commit()
 }
 
+// retireLimits drops an account's limits that are not in current from the
+// current view. A window still open ends when its limit was last seen, so
+// usage after that counts toward whichever limit took over its models.
+func (s *Store) retireLimits(ctx context.Context, provider, account string, current map[string]bool) error {
+	type limit struct {
+		key              string
+		resets, observed int64
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT limit_key,resets_at,observed_at FROM latest WHERE provider=? AND account=?`, provider, account)
+	if err != nil {
+		return err
+	}
+	var gone []limit
+	for rows.Next() {
+		var l limit
+		if err := rows.Scan(&l.key, &l.resets, &l.observed); err != nil {
+			rows.Close()
+			return err
+		}
+		if !current[l.key] {
+			gone = append(gone, l)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil || len(gone) == 0 {
+		return err
+	}
+	tolerance := int64(resetTolerance.Seconds())
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, l := range gone {
+		if l.resets > l.observed {
+			if _, err := tx.ExecContext(ctx, `UPDATE windows SET ended_at=? WHERE provider=? AND account=? AND limit_key=?
+				AND resets_at BETWEEN ? AND ? AND ended_at=0`, l.observed, provider, account, l.key, l.resets-tolerance, l.resets+tolerance); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM latest WHERE provider=? AND account=? AND limit_key=?`, provider, account, l.key); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // Windows lists a provider's windows, most recent reset first. Codex and
 // Antigravity move the reset time on an early reset, so a window overlapped by
 // a later window of the same limit ended when that one began.

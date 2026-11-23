@@ -80,15 +80,36 @@ type antigravityModel struct {
 type antigravitySummary struct {
 	Response struct {
 		Groups []struct {
-			DisplayName string `json:"displayName"`
-			Buckets     []struct {
-				BucketID          string   `json:"bucketId"`
-				Window            string   `json:"window"`
-				RemainingFraction *float64 `json:"remainingFraction"`
-				ResetTime         string   `json:"resetTime"`
-			} `json:"buckets"`
+			DisplayName string              `json:"displayName"`
+			Buckets     []antigravityBucket `json:"buckets"`
 		} `json:"groups"`
 	} `json:"response"`
+}
+
+type antigravityBucket struct {
+	BucketID          string   `json:"bucketId"`
+	Window            string   `json:"window"`
+	RemainingFraction *float64 `json:"remainingFraction"`
+	ResetTime         string   `json:"resetTime"`
+	// A bucket that does not apply for now, such as the 5-hour limit while
+	// the weekly one is exhausted, reports itself empty without being used.
+	Disabled bool `json:"disabled"`
+}
+
+// fresher says bucket is a later reading of the same bucket than other: a
+// later window, or more of the same window used. Each running language server
+// keeps its own copy of the summary, and some lag behind the others.
+func (bucket antigravityBucket) fresher(other antigravityBucket) bool {
+	resets, err := time.Parse(time.RFC3339Nano, bucket.ResetTime)
+	if err != nil {
+		return false
+	}
+	if previous, err := time.Parse(time.RFC3339Nano, other.ResetTime); err == nil {
+		if gap := resets.Sub(previous); gap > resetTolerance || gap < -resetTolerance {
+			return gap > 0
+		}
+	}
+	return antigravityUsed(bucket.RemainingFraction) > antigravityUsed(other.RemainingFraction)
 }
 
 // AntigravityHome is Antigravity's per-user folder.
@@ -130,34 +151,84 @@ func (c *AntigravityCollector) Collect(ctx context.Context) error {
 	// The quota summary reports each model group's weekly and 5-hour limits
 	// together, exactly as Antigravity shows them. Older versions without it
 	// fall back to the per-model quota, which names only the binding limit.
-	var summary antigravitySummary
-	if _, err := c.query(ctx, &hub, antigravitySummaryPath, &summary); err == nil && len(summary.Response.Groups) > 0 {
-		return c.observeSummary(ctx, account, summary, now)
+	if summaries := c.summaries(ctx, hub, user.Email); len(summaries) > 0 {
+		return c.observeSummary(ctx, account, summaries, now)
 	}
 	return c.observeModels(ctx, account, user.CascadeModelConfigData.ClientModelConfigs, now)
 }
 
-func (c *AntigravityCollector) observeSummary(ctx context.Context, account Account, summary antigravitySummary, now time.Time) error {
-	for _, group := range summary.Response.Groups {
-		for _, bucket := range group.Buckets {
-			minutes, ok := antigravityWindows[bucket.Window]
-			if !ok || bucket.BucketID == "" || bucket.ResetTime == "" {
+// summaries asks every running language server signed in to email for its
+// quota summary, starting with hub.
+func (c *AntigravityCollector) summaries(ctx context.Context, hub antigravityHub, email string) []antigravitySummary {
+	var out []antigravitySummary
+	asked := map[int]bool{}
+	for _, candidate := range append([]antigravityHub{hub}, readAntigravityHubs(filepath.Join(AntigravityHome(c.GeminiHome), "daemon"))...) {
+		if asked[candidate.HTTPPort] {
+			continue
+		}
+		asked[candidate.HTTPPort] = true
+		if candidate.HTTPPort != hub.HTTPPort {
+			// Another server may be signed in to another account.
+			var status antigravityStatus
+			if _, err := c.query(ctx, &candidate, antigravityStatusPath, &status); err != nil || status.UserStatus.Email != email {
 				continue
 			}
-			resets, err := time.Parse(time.RFC3339Nano, bucket.ResetTime)
-			if err != nil {
-				continue
-			}
-			if err := c.Store.Observe(ctx, Observation{
-				Provider: Antigravity, Account: account.ID, Plan: account.Plan, Key: bucket.BucketID,
-				Label: group.DisplayName, WindowMinutes: minutes,
-				UsedPercent: antigravityUsed(bucket.RemainingFraction), ResetsAt: resets, ObservedAt: now,
-			}); err != nil {
-				return err
+		}
+		var summary antigravitySummary
+		if _, err := c.query(ctx, &candidate, antigravitySummaryPath, &summary); err == nil && len(summary.Response.Groups) > 0 {
+			out = append(out, summary)
+		}
+	}
+	return out
+}
+
+func (c *AntigravityCollector) observeSummary(ctx context.Context, account Account, summaries []antigravitySummary, now time.Time) error {
+	type reading struct {
+		label  string
+		bucket antigravityBucket
+	}
+	// Antigravity regroups its models from time to time, so a bucket is
+	// whatever the summary names now; the freshest server's reading wins.
+	buckets := map[string]reading{}
+	var order []string
+	for _, summary := range summaries {
+		for _, group := range summary.Response.Groups {
+			for _, bucket := range group.Buckets {
+				if _, ok := antigravityWindows[bucket.Window]; !ok || bucket.BucketID == "" || bucket.ResetTime == "" {
+					continue
+				}
+				previous, seen := buckets[bucket.BucketID]
+				if !seen {
+					order = append(order, bucket.BucketID)
+				}
+				if !seen || bucket.fresher(previous.bucket) {
+					buckets[bucket.BucketID] = reading{label: group.DisplayName, bucket: bucket}
+				}
 			}
 		}
 	}
-	return nil
+	if len(buckets) == 0 {
+		return nil
+	}
+	current := map[string]bool{}
+	for _, key := range order {
+		r := buckets[key]
+		current[key] = true
+		resets, err := time.Parse(time.RFC3339Nano, r.bucket.ResetTime)
+		if err != nil || r.bucket.Disabled {
+			continue
+		}
+		if err := c.Store.Observe(ctx, Observation{
+			Provider: Antigravity, Account: account.ID, Plan: account.Plan, Key: key,
+			Label: r.label, WindowMinutes: antigravityWindows[r.bucket.Window],
+			UsedPercent: antigravityUsed(r.bucket.RemainingFraction), ResetsAt: resets, ObservedAt: now,
+		}); err != nil {
+			return err
+		}
+	}
+	// A bucket the summary no longer names is gone: its models now count
+	// toward another one.
+	return c.Store.retireLimits(ctx, Antigravity, account.ID, current)
 }
 
 func (c *AntigravityCollector) observeModels(ctx context.Context, account Account, models []antigravityModel, now time.Time) error {
